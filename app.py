@@ -97,7 +97,7 @@ class SmogVisionGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.file_path = None
-        self.model_path = "smog-classification/smog_classifier.pth"
+        self.model_path = "smog-classification/smog_classifier_traffic.pth"
         self.video_worker = None
         self.inference_worker = None
         self.init_ui()

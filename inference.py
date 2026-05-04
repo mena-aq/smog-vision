@@ -22,13 +22,10 @@ class SmogClassifier:
         self.class_names = ["Clear", "Smog"]
         
     def _load_model(self, model_path: str):
-        """Load ResNet18 model from checkpoint (Sequential head, Sigmoid, weights=None)."""
+        """Load ResNet18 model from checkpoint (Linear head, no Sigmoid)."""
         model = models.resnet18(weights=None)
         num_features = model.fc.in_features
-        model.fc = nn.Sequential(
-            nn.Linear(num_features, 1),
-            nn.Sigmoid()
-        )
+        model.fc = nn.Linear(num_features, 1)  # Linear, no Sigmoid
         # Load checkpoint
         state_dict = torch.load(model_path, map_location=self.device)
         model.load_state_dict(state_dict)
@@ -78,7 +75,9 @@ class SmogClassifier:
         
         # Predict
         with torch.inference_mode():
-            prob = self.model(image_tensor).item()  # Already sigmoid
+            logits = self.model(image_tensor)
+            # Actually apply sigmoid to squash the result between 0 and 1
+            prob = torch.sigmoid(logits).item()
 
         predicted_class = "Smog" if prob > 0.5 else "Clear"
         confidence = prob if prob > 0.5 else 1.0 - prob
