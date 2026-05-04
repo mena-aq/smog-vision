@@ -38,13 +38,10 @@ env/
 .streamlit/
 
 # PyTorch
-*.pth
-*.pt
 checkpoint/
 
 # Jupyter Notebook
 .ipynb_checkpoints/
-*.ipynb
 
 # OS
 .DS_Store
