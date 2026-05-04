@@ -225,7 +225,7 @@ class SmogVisionGUI(QMainWindow):
             "Stage 1", 
             "#EF4444", 
             "#FFF1F1", 
-            ["Predicted Class", "Accuracy", "Precision", "Recall", "F1-Score", "Processing Time"]
+            ["Predicted Class", "Confidence", "Precision", "Recall", "F1-Score", "Processing Time"]
         )
         layout.addWidget(self.cnn_metrics)
 
@@ -386,7 +386,7 @@ class SmogVisionGUI(QMainWindow):
             if stage_name == "Smog Classification":
                 classification = data.get("classification", {})
                 
-                self.update_metric_row(self.cnn_metrics, "Accuracy", f"{classification.get('confidence', 0)*100:.1f}%")
+                self.update_metric_row(self.cnn_metrics, "Confidence", f"{classification.get('confidence', 0)*100:.1f}%")
                 self.update_metric_row(self.cnn_metrics, "Precision", f"{classification.get('precision', 0):.2f}")
                 self.update_metric_row(self.cnn_metrics, "Recall", f"{classification.get('recall', 0):.2f}")
                 self.update_metric_row(self.cnn_metrics, "F1-Score", f"{classification.get('f1_score', 0):.2f}")
@@ -406,8 +406,8 @@ class SmogVisionGUI(QMainWindow):
                 else:
                     class_row_label.setStyleSheet("color: #10B981; font-weight: bold; font-size: 13px;")
 
-                # Existing confidence/accuracy update
-                self.update_metric_row(self.cnn_metrics, "Accuracy", f"{classification.get('confidence', 0)*100:.1f}%")
+                # Existing confidence update
+                self.update_metric_row(self.cnn_metrics, "Confidence", f"{classification.get('confidence', 0)*100:.1f}%")
                 self.update_metric_row(self.cnn_metrics, "Processing Time", f"{proc_time}ms")
             
             elif stage_name == "DCP Dehazing":

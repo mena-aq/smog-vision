@@ -31,6 +31,8 @@ class SmogClassifier:
         model.load_state_dict(state_dict)
         model.to(self.device)
         model.eval()
+        print(model)
+
         return model
     
     def _get_transforms(self):
