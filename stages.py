@@ -33,11 +33,19 @@ class SmogClassificationStage(PipelineStage):
             else:
                 image_path = None
             
+            # Measure classification time
+            start = time.time()
+            
             # Run classification
             result = self.classifier.predict(
                 image_path=image_path,
                 image_array=image_input if image_path is None else None
             )
+            
+            elapsed = time.time() - start
+            
+            # Add processing time to result
+            result["processing_time_ms"] = round(elapsed * 1000, 1)
             
             return PipelineResult(
                 stage_name=self.name,
@@ -248,50 +256,312 @@ class DCPDehazingStage(PipelineStage):
 
 
 class HOGSVMObjectDetectionStage(PipelineStage):
-    """Placeholder for HOG+SVM Object Detection stage."""
-    
-    def __init__(self):
-        super().__init__("HOG+SVM Object Detection")
-    
+    """HOG+SVM pedestrian detection and Haar cascade car detection."""
+
+    PERSON_COLOR = (0, 255, 0)    # Green for people
+    CAR_COLOR    = (255, 165, 0)  # Orange for cars
+
+    def __init__(
+            self,
+            person_win_stride: tuple = (4, 4),
+            person_padding: tuple = (8, 8),
+            person_scale: float = 1.01,
+            car_scale_factor: float = 1.05,
+            car_min_neighbors: int = 2,
+            car_min_size: tuple = (35, 35),
+        ):
+            super().__init__("HOG+SVM Object Detection")
+
+            # --- Pedestrian detector (HOG + pretrained SVM) ---
+            self.hog = cv2.HOGDescriptor()
+            self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+            self.person_win_stride = person_win_stride
+            self.person_padding    = person_padding
+            self.person_scale      = person_scale
+
+            # --- Car detector (Local Haar cascade) ---
+            # Look for the file in your current project directory
+            local_path = "haarcascade_car.xml"
+            
+            if os.path.exists(local_path):
+                self.car_cascade = cv2.CascadeClassifier(local_path)
+                print("Successfully loaded car detection model.")
+            else:
+                # Fallback to help you debug
+                self.car_cascade = None
+                print(f"CRITICAL: {local_path} not found in project folder!")
+                print("Please ensure you downloaded the XML and named it correctly.")
+
+            self.car_scale_factor  = car_scale_factor
+            self.car_min_neighbors = car_min_neighbors
+            self.car_min_size      = car_min_size
+ 
     def process(self, input_data: dict) -> PipelineResult:
         """
-        TODO: Implement HOG+SVM object detection.
-        
-        Input: {"image_input": <PIL Image>, "dehazed_image": <PIL Image>, ...}
+        Input:  {"dehazed_image": <PIL Image>, ...}
         Output: {"segmented_image": <PIL Image>, "detections": [...], ...}
         """
         try:
-            # Use the dehazed image if available, otherwise original
-            image_to_process = input_data.get("dehazed_image", input_data.get("image_input"))
-            
-            # Placeholder: return the same image
-            segmented_image = image_to_process
-            
+            import time
+
+            # Prefer dehazed image, fall back to original
+            source = input_data.get("dehazed_image", input_data.get("image_input"))
+            img_np = self._to_numpy_uint8(source)   # uint8 RGB (H, W, 3)
+            img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+
+            start = time.time()
+
+            people, people_weights = self._detect_people(img_bgr)
+            cars                   = self._detect_cars(img_bgr)
+
+            elapsed_ms = round((time.time() - start) * 1000, 1)
+
+            # Draw bounding boxes on a copy of the dehazed image
+            annotated_bgr = img_bgr.copy()
+            self._draw_boxes(annotated_bgr, people, self.PERSON_COLOR, "Person")
+            self._draw_boxes(annotated_bgr, cars,   self.CAR_COLOR,    "Car")
+
+            annotated_pil = Image.fromarray(
+                cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
+            )
+
+            detections = (
+                [{"type": "person", "box": list(map(int, b)), "weight": float(w)}
+                 for b, w in zip(people, people_weights)]
+                +
+                [{"type": "car",    "box": list(map(int, b))}
+                 for b in cars]
+            )
+
+            hog_metrics = {
+                "people_count":    len(people),
+                "car_count":       len(cars),
+                "total_detections": len(people) + len(cars),
+                "processing_time_ms": elapsed_ms,
+            }
+
             return PipelineResult(
                 stage_name=self.name,
                 success=True,
                 data={
                     **input_data,
-                    "segmented_image": segmented_image,
-                    "detections": []  # Placeholder for detection results
-                }
+                    "segmented_image": annotated_pil,
+                    "detections":      detections,
+                    "hog_metrics":     hog_metrics,
+                },
+            )
+
+        except Exception as e:
+            return PipelineResult(
+                stage_name=self.name,
+                success=False,
+                data={},
+                error=str(e),
+            )
+
+    def _detect_people(self, img_bgr: np.ndarray):
+        """Run HOG+SVM pedestrian detector. Returns (boxes, weights)."""
+        boxes, weights = self.hog.detectMultiScale(
+            img_bgr,
+            winStride=self.person_win_stride,
+            padding=self.person_padding,
+            scale=self.person_scale,
+        )
+        if len(boxes) == 0:
+            return [], []
+        boxes  = self._nms(boxes, overlap_thresh=0.65)
+        return boxes, weights[:len(boxes)]
+
+    def _detect_cars(self, img_bgr: np.ndarray):
+        """Run Haar cascade car detector. Returns list of (x, y, w, h)."""
+        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        gray = cv2.equalizeHist(gray)   # helps in low-contrast/hazy scenes
+        cars = self.car_cascade.detectMultiScale(
+            gray,
+            scaleFactor=self.car_scale_factor,
+            minNeighbors=self.car_min_neighbors,
+            minSize=self.car_min_size,
+            flags=cv2.CASCADE_SCALE_IMAGE,
+        )
+        if len(cars) == 0:
+            return []
+        return self._nms(cars, overlap_thresh=0.4)
+
+    @staticmethod
+    def _draw_boxes(img_bgr, boxes, color_rgb, label: str):
+        """Draw labelled bounding boxes in-place (BGR image)."""
+        color_bgr = (color_rgb[2], color_rgb[1], color_rgb[0])
+        for (x, y, w, h) in boxes:
+            x, y, w, h = int(x), int(y), int(w), int(h)
+            cv2.rectangle(img_bgr, (x, y), (x + w, y + h), color_bgr, 2)
+            # Label background
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+            cv2.rectangle(img_bgr, (x, y - th - 6), (x + tw + 4, y), color_bgr, -1)
+            cv2.putText(
+                img_bgr, label,
+                (x + 2, y - 4),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                (255, 255, 255), 1, cv2.LINE_AA,
+            )
+
+    @staticmethod
+    def _nms(boxes, overlap_thresh: float = 0.65):
+        """
+        Non-maximum suppression to remove duplicate overlapping boxes.
+        boxes: list/array of (x, y, w, h)
+        """
+        if len(boxes) == 0:
+            return []
+
+        boxes = np.array(boxes)
+        x1 = boxes[:, 0].astype(float)
+        y1 = boxes[:, 1].astype(float)
+        x2 = (boxes[:, 0] + boxes[:, 2]).astype(float)
+        y2 = (boxes[:, 1] + boxes[:, 3]).astype(float)
+        areas = (x2 - x1 + 1) * (y2 - y1 + 1)
+
+        idxs = np.argsort(y2)
+        picked = []
+
+        while len(idxs) > 0:
+            last = idxs[-1]
+            picked.append(last)
+
+            xx1 = np.maximum(x1[last], x1[idxs[:-1]])
+            yy1 = np.maximum(y1[last], y1[idxs[:-1]])
+            xx2 = np.minimum(x2[last], x2[idxs[:-1]])
+            yy2 = np.minimum(y2[last], y2[idxs[:-1]])
+
+            w = np.maximum(0, xx2 - xx1 + 1)
+            h = np.maximum(0, yy2 - yy1 + 1)
+            overlap = (w * h) / areas[idxs[:-1]]
+
+            idxs = np.delete(idxs, np.concatenate(([len(idxs) - 1],
+                             np.where(overlap > overlap_thresh)[0])))
+
+        return boxes[picked]
+
+    @staticmethod
+    def _to_numpy_uint8(image_input) -> np.ndarray:
+        """Convert path / PIL Image / ndarray → uint8 RGB."""
+        if isinstance(image_input, str):
+            return np.array(Image.open(image_input).convert("RGB"), dtype=np.uint8)
+        elif isinstance(image_input, Image.Image):
+            return np.array(image_input.convert("RGB"), dtype=np.uint8)
+        elif isinstance(image_input, np.ndarray):
+            return image_input.astype(np.uint8)
+        else:
+            raise TypeError(f"Unsupported image type: {type(image_input)}")
+
+
+class YOLOObjectDetectionStage(PipelineStage):
+    """Placeholder for YOLO-based object detection."""
+
+    def __init__(self, model_path: str = None):
+        super().__init__("YOLO Object Detection")
+        self.model_path = model_path
+
+    def process(self, input_data: dict) -> PipelineResult:
+        """
+        Placeholder YOLO stage.
+
+        Input:  {"dehazed_image": <PIL Image>, ...}
+        Output: {"segmented_image": <PIL Image>, "detections": [...], ...}
+        """
+        try:
+            start = time.time()
+
+            source = input_data.get("dehazed_image", input_data.get("image_input"))
+            elapsed_ms = round((time.time() - start) * 1000, 1)
+
+            yolo_metrics = {
+                "model_path": self.model_path,
+                "people_count": 0,
+                "car_count": 0,
+                "total_detections": 0,
+                "processing_time_ms": elapsed_ms,
+            }
+
+            return PipelineResult(
+                stage_name=self.name,
+                success=True,
+                data={
+                    **input_data,
+                    "segmented_image": source,
+                    "detections": [],
+                    "yolo_metrics": yolo_metrics,
+                },
             )
         except Exception as e:
             return PipelineResult(
                 stage_name=self.name,
                 success=False,
                 data={},
-                error=str(e)
+                error=str(e),
             )
 
 
-def create_default_pipeline(model_path: str):
+class RCNNObjectDetectionStage(PipelineStage):
+    """Placeholder for RCNN-based object detection."""
+
+    def __init__(self, model_path: str = None):
+        super().__init__("RCNN Object Detection")
+        self.model_path = model_path
+
+    def process(self, input_data: dict) -> PipelineResult:
+        """
+        Placeholder RCNN stage.
+
+        Input:  {"dehazed_image": <PIL Image>, ...}
+        Output: {"segmented_image": <PIL Image>, "detections": [...], ...}
+        """
+        try:
+            start = time.time()
+
+            source = input_data.get("dehazed_image", input_data.get("image_input"))
+            elapsed_ms = round((time.time() - start) * 1000, 1)
+
+            rcnn_metrics = {
+                "model_path": self.model_path,
+                "people_count": 0,
+                "car_count": 0,
+                "total_detections": 0,
+                "processing_time_ms": elapsed_ms,
+            }
+
+            return PipelineResult(
+                stage_name=self.name,
+                success=True,
+                data={
+                    **input_data,
+                    "segmented_image": source,
+                    "detections": [],
+                    "rcnn_metrics": rcnn_metrics,
+                },
+            )
+        except Exception as e:
+            return PipelineResult(
+                stage_name=self.name,
+                success=False,
+                data={},
+                error=str(e),
+            )
+
+
+def create_default_pipeline(model_path: str, object_detection_model: str = "hogsvm"):
     """Create a pipeline with all stages."""
     from pipeline import SmogClassificationPipeline
     
     pipeline = SmogClassificationPipeline()
     pipeline.add_stage(SmogClassificationStage(model_path))
     pipeline.add_stage(DCPDehazingStage())
-    pipeline.add_stage(HOGSVMObjectDetectionStage())
+
+    detection_model = (object_detection_model or "hogsvm").strip().lower()
+    if detection_model == "yolo":
+        pipeline.add_stage(YOLOObjectDetectionStage())
+    elif detection_model == "rcnn":
+        pipeline.add_stage(RCNNObjectDetectionStage())
+    else:
+        pipeline.add_stage(HOGSVMObjectDetectionStage())
     
     return pipeline

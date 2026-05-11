@@ -233,8 +233,8 @@ class SmogVisionGUI(QMainWindow):
                                                ["Transmission Map", "Dark Channel", "Airlight RGB", "Processing Time"])
         layout.addWidget(self.dcp_metrics)
 
-        self.hog_svm_metrics = self.create_metric_box("HOG + SVM", "Stage 3", "#10B981", "#F0FDF4", 
-                                                   ["Detections", "Avg. Confidence", "True Positive", "False Positive", "Processing Time"])
+        self.hog_svm_metrics = self.create_metric_box("HOG + SVM", "Stage 3", "#10B981", "#F0FDF4",
+                                               ["People Detected", "Cars Detected", "Total Detections", "Processing Time"])
         layout.addWidget(self.hog_svm_metrics)
 
         layout.addStretch()
@@ -379,42 +379,54 @@ class SmogVisionGUI(QMainWindow):
             stage_name = stage_result["stage_name"]
             data = stage_result["data"]
             
-            # Dummy processing time
-            proc_time = np.random.randint(50, 200)
-            total_time += proc_time
-            
             if stage_name == "Smog Classification":
                 classification = data.get("classification", {})
+                
+                # Get real processing time from classification
+                proc_time = classification.get("processing_time_ms", 0)
+                total_time += proc_time
                 
                 self.update_metric_row(self.cnn_metrics, "Accuracy", f"{classification.get('confidence', 0)*100:.1f}%")
                 self.update_metric_row(self.cnn_metrics, "Precision", f"{classification.get('precision', 0):.2f}")
                 self.update_metric_row(self.cnn_metrics, "Recall", f"{classification.get('recall', 0):.2f}")
                 self.update_metric_row(self.cnn_metrics, "F1-Score", f"{classification.get('f1_score', 0):.2f}")
-                
-                # Now proc_time is defined and won't crash!
                 self.update_metric_row(self.cnn_metrics, "Processing Time", f"{proc_time}ms")
                 
-                # Predicted Class Logic (Keep your existing code)
+                # Predicted Class Logic
                 pred_class = classification.get('class', 'Unknown').upper()
                 self.update_metric_row(self.cnn_metrics, "Predicted Class", pred_class)
                 
-                # 2. Add some color logic to the Predicted Class label
-                # This makes "SMOGGY" red and "CLEAR" green automatically
+                # Color code the Predicted Class label
                 class_row_label = self.cnn_metrics.property("metric_widgets")["Predicted Class"].property("value_label")
-                if "SMOGGY" in pred_class:
+                if "SMOG" in pred_class:
                     class_row_label.setStyleSheet("color: #EF4444; font-weight: bold; font-size: 13px;")
                 else:
                     class_row_label.setStyleSheet("color: #10B981; font-weight: bold; font-size: 13px;")
-
-                # Existing confidence/accuracy update
-                self.update_metric_row(self.cnn_metrics, "Accuracy", f"{classification.get('confidence', 0)*100:.1f}%")
-                self.update_metric_row(self.cnn_metrics, "Processing Time", f"{proc_time}ms")
             
             elif stage_name == "DCP Dehazing":
-                self.update_metric_row(self.dcp_metrics, "Processing Time", f"{proc_time}ms")
+                dcp = data.get("dcp_metrics", {})
+                if dcp:
+                    # Get real processing time from DCP metrics
+                    proc_time = dcp.get("processing_time_ms", 0)
+                    total_time += proc_time
+                    
+                    airlight = dcp.get("airlight_rgb", (0, 0, 0))
+                    self.update_metric_row(self.dcp_metrics, "Transmission Map", f"{dcp.get('transmission_map', 0):.3f}")
+                    self.update_metric_row(self.dcp_metrics, "Dark Channel",     f"{dcp.get('dark_channel', 0):.3f}")
+                    self.update_metric_row(self.dcp_metrics, "Airlight RGB",     f"({airlight[0]}, {airlight[1]}, {airlight[2]})")
+                    self.update_metric_row(self.dcp_metrics, "Processing Time",  f"{proc_time}ms")
             
             elif stage_name == "HOG+SVM Object Detection":
-                self.update_metric_row(self.hog_svm_metrics, "Processing Time", f"{proc_time}ms")
+                hog = data.get("hog_metrics", {})
+                if hog:
+                    # Get real processing time from HOG metrics
+                    proc_time = hog.get("processing_time_ms", 0)
+                    total_time += proc_time
+                    
+                    self.update_metric_row(self.hog_svm_metrics, "People Detected", str(hog.get("people_count", 0)))
+                    self.update_metric_row(self.hog_svm_metrics, "Cars Detected",   str(hog.get("car_count", 0)))
+                    self.update_metric_row(self.hog_svm_metrics, "Total Detections", str(hog.get("total_detections", 0)))
+                    self.update_metric_row(self.hog_svm_metrics, "Processing Time",  f"{proc_time}ms")
         
         self.total_time_label.property("value_label").setText(f"{total_time}ms")
         self.total_time_label.setVisible(True)
