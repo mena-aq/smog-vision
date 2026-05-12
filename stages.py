@@ -973,6 +973,218 @@ class RCNNObjectDetectionStage(PipelineStage):
         return segmented_pil, detections, person_count, vehicle_count
 
 
+
+
+class MaskGenerationStage(PipelineStage):
+    """Generate segmentation masks with object outlines from detected regions."""
+    
+    def __init__(self, method: str = "contour"):
+        """
+        Args:
+            method: "contour" (extract edges from detection region) or "filled" (filled rectangles)
+        """
+        super().__init__("Mask Generation")
+        self.method = method.lower()
+        
+        if self.method not in ("contour", "filled"):
+            raise ValueError(f"Unknown mask method: {method}. Use 'contour' or 'filled'.")
+        
+        # Color mapping for each class (RGB format)
+        self.class_colors = {
+            'person': (0, 255, 0),        # Green for people
+            'car': (0, 165, 255),         # Orange for vehicles
+            'truck': (0, 165, 255),       # Orange
+            'bus': (0, 165, 255),         # Orange
+            'motorcycle': (0, 165, 255),  # Orange
+            'bicycle': (0, 165, 255),     # Orange
+            'train': (0, 165, 255),       # Orange
+            'boat': (0, 165, 255),        # Orange
+        }
+    
+    def process(self, input_data: dict) -> PipelineResult:
+        """
+        Generate segmentation masks from bounding box detections.
+        
+        Input:  {
+            "image_input": <original PIL>,
+            "dehazed_image": <dehazed PIL>,
+            "detections": [...]
+        }
+        Output: {"mask_dehazed": <PIL>, "mask_original": <PIL>}
+        """
+        try:
+            start_time = time.time()
+            
+            # Get source images for mask generation
+            dehazed_source = input_data.get("dehazed_image")
+            original_source = input_data.get("image_input")
+            detections = input_data.get("detections", [])
+            
+            print(f"MaskGenerationStage: dehazed_source type={type(dehazed_source)}, original_source type={type(original_source)}")
+            
+            if dehazed_source is None or original_source is None:
+                raise ValueError("Both dehazed_image and image_input are required")
+            
+            # Convert to numpy using proper handler
+            dehazed_np = self._to_numpy_uint8(dehazed_source)
+            original_np = self._to_numpy_uint8(original_source)
+            
+            print(f"After conversion: dehazed_np.shape={dehazed_np.shape}, original_np.shape={original_np.shape}")
+            
+            h_d, w_d = dehazed_np.shape[:2]
+            h_o, w_o = original_np.shape[:2]
+            
+            # Create blank masks (black background)
+            mask_dehazed = np.zeros((h_d, w_d, 3), dtype=np.uint8)
+            mask_original = np.zeros((h_o, w_o, 3), dtype=np.uint8)
+            
+            # Draw each detection
+            for detection in detections:
+                class_type = detection.get("type", "unknown")
+                bbox = detection.get("bbox", [])
+                
+                if len(bbox) < 4:
+                    continue
+                
+                x, y, w, h = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+                x2, y2 = x + w, y + h
+                
+                # Get color for this class (RGB → BGR for OpenCV)
+                color_rgb = self.class_colors.get(class_type, (128, 128, 128))
+                color_bgr = (color_rgb[2], color_rgb[1], color_rgb[0])
+                
+                if self.method == "contour":
+                    # Extract contours from both source images
+                    self._draw_contour_mask(dehazed_np, mask_dehazed, x, y, x2, y2, color_bgr)
+                    self._draw_contour_mask(original_np, mask_original, x, y, x2, y2, color_bgr)
+                else:
+                    # Simple filled rectangles
+                    cv2.rectangle(mask_dehazed, (x, y), (x2, y2), color_bgr, -1)
+                    cv2.rectangle(mask_original, (x, y), (x2, y2), color_bgr, -1)
+            
+            # Convert masks back to PIL
+            mask_dehazed_pil = Image.fromarray(mask_dehazed, mode="RGB")
+            mask_original_pil = Image.fromarray(mask_original, mode="RGB")
+            
+            processing_time_ms = (time.time() - start_time) * 1000
+            
+            print(f"Generated {self.method} masks with {len(detections)} detections in {processing_time_ms:.1f}ms")
+            
+            return PipelineResult(
+                stage_name=self.name,
+                success=True,
+                data={
+                    **input_data,
+                    "mask_dehazed": mask_dehazed_pil,
+                    "mask_original": mask_original_pil,
+                    "mask_metrics": {
+                        "num_detections": len(detections),
+                        "processing_time_ms": processing_time_ms,
+                        "mask_method": self.method,
+                    }
+                },
+            )
+        
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return PipelineResult(
+                stage_name=self.name,
+                success=False,
+                data={},
+                error=f"Mask generation error: {str(e)}",
+            )
+    
+    def _draw_contour_mask(self, source_img: np.ndarray, mask: np.ndarray, x1: int, y1: int, x2: int, y2: int, color_bgr: tuple):
+        """
+        Extract object contours from a bounding box region and draw on mask.
+        Works with any detector (HOG+SVM, YOLO, RCNN) because it operates on image pixels.
+        
+        Args:
+            source_img: Source image (RGB) to extract contours from
+            mask: Output mask to draw on
+            x1, y1, x2, y2: Bounding box coordinates
+            color_bgr: Color to draw contours in BGR format
+        """
+        # Bounds check
+        h, w = source_img.shape[:2]
+        x1 = max(0, min(x1, w-1))
+        y1 = max(0, min(y1, h-1))
+        x2 = max(x1+1, min(x2, w))
+        y2 = max(y1+1, min(y2, h))
+        
+        # Extract region of interest
+        roi = source_img[y1:y2, x1:x2]
+        
+        if roi.size == 0:
+            # Fallback if ROI is empty
+            cv2.rectangle(mask, (x1, y1), (x2, y2), color_bgr, -1)
+            return
+        
+        # Convert to grayscale
+        if len(roi.shape) == 3:
+            gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = roi
+        
+        # Apply morphological operations to enhance edges and reduce noise
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        gray = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)  # Close holes
+        gray = cv2.morphologyEx(gray, cv2.MORPH_OPEN, kernel)   # Remove small noise
+        
+        # Edge detection with adaptive thresholds
+        edges = cv2.Canny(gray, 30, 100)
+        
+        # Dilate to connect broken edges
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        edges = cv2.dilate(edges, kernel, iterations=1)
+        
+        # Find contours
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if not contours:
+            # Fallback: draw filled rectangle if no contours found (hazy/low-contrast regions)
+            cv2.rectangle(mask, (x1, y1), (x2, y2), color_bgr, -1)
+            return
+        
+        # Draw all contours on the mask
+        for contour in contours:
+            # Filter out very small contours (noise)
+            area = cv2.contourArea(contour)
+            if area > 5:  # Minimum area threshold
+                # Shift contour back to original image coordinates
+                contour_shifted = contour + np.array([x1, y1])
+                
+                # Draw filled contour on mask
+                cv2.drawContours(mask, [contour_shifted], 0, color_bgr, -1)
+    
+    @staticmethod
+    def _to_numpy_uint8(image_input) -> np.ndarray:
+        """Convert path / PIL Image / ndarray → uint8 RGB."""
+        if isinstance(image_input, str):
+            return np.array(Image.open(image_input).convert("RGB"), dtype=np.uint8)
+        elif isinstance(image_input, Image.Image):
+            return np.array(image_input.convert("RGB"), dtype=np.uint8)
+        elif isinstance(image_input, np.ndarray):
+            if image_input.size == 0:
+                raise ValueError(f"Empty numpy array: shape={image_input.shape}")
+            if image_input.ndim == 3 and image_input.shape[2] in (3, 4):
+                return image_input[:, :, :3].astype(np.uint8)  # Take RGB channels only
+            elif image_input.ndim == 2:
+                # Grayscale, convert to RGB
+                return np.stack([image_input, image_input, image_input], axis=2).astype(np.uint8)
+            else:
+                raise ValueError(f"Unexpected array shape: {image_input.shape}")
+        else:
+            raise TypeError(f"Unsupported image type: {type(image_input)}")
+
+
+# Usage in create_default_pipeline:
+# pipeline.add_stage(MaskGenerationStage(method="contour"))  # For object outlines
+# OR
+# pipeline.add_stage(MaskGenerationStage(method="filled"))   # For filled boxes
+
+
 def create_default_pipeline(model_path: str, object_detection_model: str = "yolo", dehazing_method: str = "clahe"):
     """Create a pipeline with all stages."""
     
@@ -990,5 +1202,8 @@ def create_default_pipeline(model_path: str, object_detection_model: str = "yolo
         pipeline.add_stage(RCNNObjectDetectionStage())
     else:
         pipeline.add_stage(HOGSVMObjectDetectionStage())
+    
+    # Add mask generation stage to create colored segmentation masks
+    pipeline.add_stage(MaskGenerationStage())
     
     return pipeline
