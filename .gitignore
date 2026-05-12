@@ -54,7 +54,7 @@ Thumbs.db
 *.xml
 
 #yolo
-yolo26n.pt
+yolo8m.pt
 
 #haar
 haarcascade_car.xml
