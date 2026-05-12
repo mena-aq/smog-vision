@@ -871,6 +871,25 @@ class SmogVisionGUI(QMainWindow):
         """Update the selected dehazing method."""
         self.selected_dehazing_method = selected_method.lower()
 
+        # Immediately toggle visible metric box based on selection
+        sel = selected_method.lower() if isinstance(selected_method, str) else ""
+        if "clahe" in sel:
+            if hasattr(self, 'clahe_metrics'):
+                self.clahe_metrics.setVisible(True)
+            if hasattr(self, 'dcp_metrics'):
+                self.dcp_metrics.setVisible(False)
+        elif "dcp" in sel:
+            if hasattr(self, 'dcp_metrics'):
+                self.dcp_metrics.setVisible(True)
+            if hasattr(self, 'clahe_metrics'):
+                self.clahe_metrics.setVisible(False)
+        else:
+            # Hide both if no valid selection
+            if hasattr(self, 'dcp_metrics'):
+                self.dcp_metrics.setVisible(False)
+            if hasattr(self, 'clahe_metrics'):
+                self.clahe_metrics.setVisible(False)
+
     def update_detection_metrics_title(self, selected_method: str):
         """Set the active object-detection metrics title from the selected detector."""
         method_titles = {
