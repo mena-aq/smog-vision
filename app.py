@@ -83,6 +83,244 @@ class ImageViewerDialog(QDialog):
         self._update_pixmap()
 
 
+class MaskViewerDialog(QDialog):
+    """Dialog for viewing and downloading segmentation masks."""
+    
+    def __init__(self, mask_dehazed, mask_original, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("View & Download Masks")
+        self.setMinimumSize(1000, 700)
+        self.mask_dehazed = mask_dehazed
+        self.mask_original = mask_original
+        
+        # Light theme stylesheet
+        self.setStyleSheet("""
+            MaskViewerDialog {
+                background-color: #FFFFFF;
+            }
+            QGroupBox {
+                background-color: #F8F9FA;
+                border: 1px solid #E0E0E0;
+                border-radius: 5px;
+                padding-top: 10px;
+                margin-top: 10px;
+                font-weight: bold;
+                color: #333333;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 15px;
+                padding: 0 3px 0 3px;
+            }
+            QLabel {
+                color: #333333;
+                background-color: transparent;
+            }
+            QScrollArea {
+                background-color: #FFFFFF;
+                border: 1px solid #E0E0E0;
+                border-radius: 3px;
+            }
+            QPushButton {
+                background-color: #007AFF;
+                color: #FFFFFF;
+                border: none;
+                border-radius: 5px;
+                padding: 8px 16px;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #0051D5;
+            }
+            QPushButton:pressed {
+                background-color: #003DA8;
+            }
+        """)
+        
+        try:
+            print(f"MaskViewerDialog init - dehazed type: {type(mask_dehazed)}, original type: {type(mask_original)}")
+            
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(20, 20, 20, 20)
+            layout.setSpacing(15)
+            
+            # Title
+            title = QLabel("Segmentation Masks")
+            title.setStyleSheet("font-size: 16px; font-weight: bold; margin-bottom: 10px; color: #1F2937;")
+            layout.addWidget(title)
+            
+            # Masks display area
+            masks_layout = QHBoxLayout()
+            
+            # Dehazed mask
+            dehazed_group = QGroupBox("Mask - Dehazed")
+            dehazed_layout = QVBoxLayout()
+            self.dehazed_label = QLabel()
+            self.dehazed_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.dehazed_label.setScaledContents(False)
+            dehazed_scroll = QScrollArea()
+            dehazed_scroll.setWidgetResizable(True)
+            dehazed_scroll.setWidget(self.dehazed_label)
+            dehazed_layout.addWidget(dehazed_scroll)
+            dehazed_group.setLayout(dehazed_layout)
+            masks_layout.addWidget(dehazed_group)
+            
+            # Arrow separator
+            arrow_label = QLabel("→")
+            arrow_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            arrow_label.setStyleSheet("font-size: 24px; font-weight: bold; color: #CCCCCC;")
+            masks_layout.addWidget(arrow_label)
+            
+            # Original mask
+            original_group = QGroupBox("Mask - Original")
+            original_layout = QVBoxLayout()
+            self.original_label = QLabel()
+            self.original_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.original_label.setScaledContents(False)
+            original_scroll = QScrollArea()
+            original_scroll.setWidgetResizable(True)
+            original_scroll.setWidget(self.original_label)
+            original_layout.addWidget(original_scroll)
+            original_group.setLayout(original_layout)
+            masks_layout.addWidget(original_group)
+            
+            layout.addLayout(masks_layout, 1)
+            
+            # Download buttons
+            download_layout = QHBoxLayout()
+            download_layout.addStretch()
+            
+            self.download_dehazed_btn = QPushButton("↓ Download Mask (Dehazed)")
+            self.download_dehazed_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.download_dehazed_btn.clicked.connect(self.download_dehazed)
+            download_layout.addWidget(self.download_dehazed_btn)
+            
+            self.download_original_btn = QPushButton("↓ Download Mask (Original)")
+            self.download_original_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.download_original_btn.clicked.connect(self.download_original)
+            download_layout.addWidget(self.download_original_btn)
+            
+            download_layout.addStretch()
+            layout.addLayout(download_layout)
+            
+            # Display masks with error handling
+            self._display_masks()
+        except Exception as e:
+            print(f"ERROR in MaskViewerDialog.__init__: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+    
+    def _display_masks(self):
+        """Display both masks in the dialog."""
+        try:
+            print("_display_masks called")
+            if self.mask_dehazed:
+                print(f"Converting dehazed mask: type={type(self.mask_dehazed)}")
+                dehazed_pixmap = self._to_pixmap(self.mask_dehazed)
+                if not dehazed_pixmap.isNull():
+                    scaled = dehazed_pixmap.scaled(400, 400, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    self.dehazed_label.setPixmap(scaled)
+                else:
+                    self.dehazed_label.setText("Failed to load dehazed mask")
+            
+            if self.mask_original:
+                print(f"Converting original mask: type={type(self.mask_original)}")
+                original_pixmap = self._to_pixmap(self.mask_original)
+                if not original_pixmap.isNull():
+                    scaled = original_pixmap.scaled(400, 400, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    self.original_label.setPixmap(scaled)
+                else:
+                    self.original_label.setText("Failed to load original mask")
+        except Exception as e:
+            print(f"ERROR in _display_masks: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    @staticmethod
+    def _to_pixmap(image_data, max_size=1024):
+        """Convert image to QPixmap with automatic downscaling for large images."""
+        try:
+            if image_data is None:
+                print("Image data is None")
+                return QPixmap()
+            
+            if isinstance(image_data, Image.Image):
+                print(f"Converting PIL Image: size={image_data.size}, mode={image_data.mode}")
+                image = image_data.convert("RGB")
+                
+                # Downscale large images to prevent memory issues
+                w, h = image.size
+                if w > max_size or h > max_size:
+                    scale = max_size / max(w, h)
+                    new_size = (int(w * scale), int(h * scale))
+                    print(f"Downscaling from {image.size} to {new_size}")
+                    image = image.resize(new_size, Image.Resampling.LANCZOS)
+                
+                data = image.tobytes("raw", "RGB")
+                q_img = QImage(data, image.width, image.height, QImage.Format.Format_RGB888)
+                pixmap = QPixmap.fromImage(q_img)
+                print(f"Successfully converted to QPixmap: {pixmap.size()}")
+                return pixmap
+            
+            if isinstance(image_data, np.ndarray):
+                print(f"Converting numpy array: shape={image_data.shape}, dtype={image_data.dtype}")
+                if image_data.ndim == 3 and image_data.shape[2] == 3:
+                    # Make a contiguous copy for QImage
+                    img_copy = np.ascontiguousarray(image_data)
+                    h, w, ch = img_copy.shape
+                    bytes_per_line = ch * w
+                    q_img = QImage(img_copy.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+                    return QPixmap.fromImage(q_img)
+                else:
+                    print(f"Unexpected numpy array shape: {image_data.shape}")
+            
+            print(f"Unsupported image data type: {type(image_data)}")
+            return QPixmap()
+        except Exception as e:
+            print(f"ERROR in _to_pixmap: {e}")
+            import traceback
+            traceback.print_exc()
+            return QPixmap()
+    
+    def download_dehazed(self):
+        """Download dehazed mask."""
+        if self.mask_dehazed is None:
+            QMessageBox.warning(self, "Warning", "No mask available for download.")
+            return
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Mask (Dehazed)", "", "PNG Images (*.png);;All Files (*)"
+        )
+        if file_path:
+            try:
+                if not file_path.lower().endswith('.png'):
+                    file_path += '.png'
+                self.mask_dehazed.save(file_path)
+                QMessageBox.information(self, "Success", f"Mask saved to:\n{file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save mask: {str(e)}")
+    
+    def download_original(self):
+        """Download original mask."""
+        if self.mask_original is None:
+            QMessageBox.warning(self, "Warning", "No mask available for download.")
+            return
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Mask (Original)", "", "PNG Images (*.png);;All Files (*)"
+        )
+        if file_path:
+            try:
+                if not file_path.lower().endswith('.png'):
+                    file_path += '.png'
+                self.mask_original.save(file_path)
+                QMessageBox.information(self, "Success", f"Mask saved to:\n{file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save mask: {str(e)}")
+
+
 class VideoWorker(QThread):
     """Worker thread for processing video frames."""
     
@@ -137,11 +375,12 @@ class InferenceWorker(QThread):
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
     
-    def __init__(self, model_path: str, image_path: str, detector: str = "hogsvm"):
+    def __init__(self, model_path: str, image_path: str, detector: str = "hogsvm", dehazing_method: str = "dcp"):
         super().__init__()
         self.model_path = model_path
         self.image_path = image_path
         self.detector = detector
+        self.dehazing_method = dehazing_method
     
     def run(self):
         try:
@@ -149,7 +388,7 @@ class InferenceWorker(QThread):
                 self.error.emit(f"Model file not found: {self.model_path}")
                 return
             
-            pipeline = create_default_pipeline(self.model_path, object_detection_model=self.detector)
+            pipeline = create_default_pipeline(self.model_path, object_detection_model=self.detector, dehazing_method=self.dehazing_method)
             result = pipeline.run(self.image_path)
             
             self.finished.emit(result)
@@ -167,7 +406,12 @@ class SmogVisionGUI(QMainWindow):
         self.video_worker = None
         self.inference_worker = None
         self.detector_dropdown = None
-        self.current_final_image = None
+        self.dehazing_method_dropdown = None
+        self.selected_dehazing_method = "dcp"  # Default dehazing method
+        self.segmented_image_dehazed = None  # Top row - Pipeline Output
+        self.segmented_image_original = None  # Bottom row - Comparison
+        self.mask_dehazed = None  # Colored segmentation mask - dehazed
+        self.mask_original = None  # Colored segmentation mask - original
         self.init_ui()
 
     def init_ui(self):
@@ -211,13 +455,22 @@ class SmogVisionGUI(QMainWindow):
         self.upload_button.clicked.connect(self.upload_file)
         upload_row.addWidget(self.upload_button)
 
+        # Dehazing Method Selection Dropdown
+        self.dehazing_method_dropdown = QComboBox()
+        self.dehazing_method_dropdown.addItems(["Select Dehazing Method", "DCP", "CLAHE"])
+        self.dehazing_method_dropdown.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.dehazing_method_dropdown.currentTextChanged.connect(self.on_dehazing_method_changed)
+        upload_row.addWidget(self.dehazing_method_dropdown)
+
         # Detector Selection Dropdown
         self.detector_dropdown = QComboBox()
         self.detector_dropdown.addItems(["Select Detection Method", "HOG + SVM", "YOLO", "RCNN"])
         self.detector_dropdown.setEnabled(True)
         self.detector_dropdown.setVisible(True)
         self.detector_dropdown.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.detector_dropdown.currentTextChanged.connect(self.on_detector_changed)
         upload_row.addWidget(self.detector_dropdown)
+
 
         # Process Button
         self.process_button = QPushButton("Process")
@@ -229,9 +482,13 @@ class SmogVisionGUI(QMainWindow):
         upload_row.addStretch()
         layout.addLayout(upload_row)
 
-        # Results area
+        # Results area with scroll support
+        results_scroll = QScrollArea()
+        results_scroll.setWidgetResizable(True)
+        results_scroll.setStyleSheet("QScrollArea { border: none; background-color: #F9FAFB; }")
+        results_scroll.setVisible(False)
+        
         self.results_widget = QWidget()
-        self.results_widget.setVisible(False)
         results_layout = QVBoxLayout(self.results_widget)
         results_layout.setContentsMargins(0, 0, 0, 0)
         results_layout.setSpacing(30)
@@ -242,6 +499,11 @@ class SmogVisionGUI(QMainWindow):
         self.original_view = self.create_image_view("Original")
         self.dehazed_view = self.create_image_view("Dehazed (DCP)")
         self.segmented_view = self.create_image_view("Final Ressult - Dehazed")
+
+        # Make segmented view clickable (top row - Pipeline Output)
+        segmented_label = self.segmented_view.property("image_label")
+        segmented_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        segmented_label.clicked.connect(lambda: self.open_segmented_viewer("dehazed"))
         
         # Change this in create_left_panel
         pipeline_layout.addWidget(self.original_view, 1) # Added stretch factor 1
@@ -259,13 +521,43 @@ class SmogVisionGUI(QMainWindow):
         self.final_result_view = self.create_image_view("Final Result - Original")
         final_result_label = self.final_result_view.property("image_label")
         final_result_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        final_result_label.clicked.connect(self.open_final_result_viewer)
+        final_result_label.clicked.connect(lambda: self.open_segmented_viewer("original"))
         
         comparison_layout.addWidget(self.final_original_view)
         comparison_layout.addWidget(self.create_arrow(large=True))
         comparison_layout.addWidget(self.final_result_view)
         comparison_group.setLayout(comparison_layout)
         results_layout.addWidget(comparison_group)
+
+        # View Masks Button
+        masks_button_layout = QHBoxLayout()
+        masks_button_layout.addStretch()
+        self.view_masks_btn = QPushButton("🎭 View Masks")
+        self.view_masks_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.view_masks_btn.setEnabled(False)
+        self.view_masks_btn.clicked.connect(self.open_mask_viewer)
+        self.view_masks_btn.setMinimumHeight(40)
+        self.view_masks_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 13px;
+                font-weight: bold;
+                padding: 10px 20px;
+                background-color: #8B5CF6;
+                color: white;
+                border: none;
+                border-radius: 5px;
+            }
+            QPushButton:hover:!pressed {
+                background-color: #7C3AED;
+            }
+            QPushButton:disabled {
+                background-color: #CCCCCC;
+                color: #999999;
+            }
+        """)
+        masks_button_layout.addWidget(self.view_masks_btn)
+        masks_button_layout.addStretch()
+        results_layout.addLayout(masks_button_layout)
 
         layout.addWidget(self.results_widget)
         layout.addStretch()
@@ -292,17 +584,43 @@ class SmogVisionGUI(QMainWindow):
         widget.setProperty("image_label", label)
         return widget
 
-    def open_final_result_viewer(self):
-        if self.current_final_image is None:
+    def open_segmented_viewer(self, view_type: str):
+        """Open viewer for segmented results (dehazed or original)."""
+        if view_type == "dehazed" and self.segmented_image_dehazed is None:
+            return
+        if view_type == "original" and self.segmented_image_original is None:
             return
 
-        viewer = ImageViewerDialog(self.current_final_image, "Final Result", self)
+        image = self.segmented_image_dehazed if view_type == "dehazed" else self.segmented_image_original
+        title = "Detection Result - Dehazed" if view_type == "dehazed" else "Detection Result - Original"
+        viewer = ImageViewerDialog(image, title, self)
         viewer.exec()
 
+    def open_mask_viewer(self):
+        """Open mask viewer dialog."""
+        try:
+            if self.mask_dehazed is None or self.mask_original is None:
+                QMessageBox.warning(self, "Warning", "Masks are not available yet.")
+                return
+            
+            viewer = MaskViewerDialog(self.mask_dehazed, self.mask_original, self)
+            viewer.exec()
+        except Exception as e:
+            print(f"ERROR in open_mask_viewer: {e}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "Error", f"Failed to open mask viewer:\n{str(e)}")
+
     def create_right_panel(self):
-        widget = QWidget()
-        widget.setObjectName("metricsPanel")
-        layout = QVBoxLayout(widget)
+        # Main container with scroll area
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet("QScrollArea { border: none; background-color: #FFFFFF; }")
+        
+        # Inner widget for scroll content
+        inner_widget = QWidget()
+        inner_widget.setObjectName("metricsPanel")
+        layout = QVBoxLayout(inner_widget)
         layout.setContentsMargins(25, 30, 25, 30)
         
         title = QLabel("Model Metrics")
@@ -315,13 +633,18 @@ class SmogVisionGUI(QMainWindow):
             "Stage 1", 
             "#EF4444", 
             "#FFF1F1", 
-            ["Predicted Class", "Accuracy", "Precision", "Recall", "F1-Score", "Processing Time"]
+            ["Predicted Class", "Confidence", "Probability Smog", "Probability Clear", "Processing Time"]
         )
         layout.addWidget(self.cnn_metrics)
 
         self.dcp_metrics = self.create_metric_box("DCP Dehazing", "Stage 2", "#F59E0B", "#FFFBEB", 
                                                ["Transmission Map", "Dark Channel", "Airlight RGB", "Processing Time"])
         layout.addWidget(self.dcp_metrics)
+
+        self.clahe_metrics = self.create_metric_box("CLAHE Dehazing", "Stage 2", "#F59E0B", "#FFFBEB", 
+                                                ["Processing Time"])
+        self.clahe_metrics.setVisible(False)
+        layout.addWidget(self.clahe_metrics)
 
         self.hog_svm_metrics = self.create_comparison_metric_box("HOG + SVM", "Stage 3", "#10B981", "#F0FDF4",
                                                ["People Detected", "Cars Detected", "Total Detections"])
@@ -342,8 +665,11 @@ class SmogVisionGUI(QMainWindow):
         
         self.total_time_label = self.create_metric_row("Total Pipeline Time", "0ms", highlight=True)
         layout.addWidget(self.total_time_label)
+
+        self.update_detection_metrics_title(self.detector_dropdown.currentText() if self.detector_dropdown else "Select Detection Method")
         
-        return widget
+        scroll_area.setWidget(inner_widget)
+        return scroll_area
     
     def create_arrow(self, large=False):
         """Helper to create an arrow label."""
@@ -483,6 +809,27 @@ class SmogVisionGUI(QMainWindow):
         box.setProperty("metric_widgets", metric_widgets)
         box.setProperty("title_label", t_label)
         return box
+
+    def on_detector_changed(self, selected_method: str):
+        """Update the object-detection metrics title as soon as the dropdown changes."""
+        self.update_detection_metrics_title(selected_method)
+
+    def on_dehazing_method_changed(self, selected_method: str):
+        """Update the selected dehazing method."""
+        self.selected_dehazing_method = selected_method.lower()
+
+    def update_detection_metrics_title(self, selected_method: str):
+        """Set the active object-detection metrics title from the selected detector."""
+        method_titles = {
+            "HOG + SVM": "HOG + SVM",
+            "YOLO": "YOLO Detector",
+            "RCNN": "RCNN Detector",
+        }
+        title_text = method_titles.get(selected_method, "Object Detection")
+
+        for box in (self.hog_svm_metrics, self.yolo_metrics, self.rcnn_metrics):
+            if box is not None:
+                box.property("title_label").setText(title_text)
     
     def create_divider(self):
         """Helper to create a horizontal divider."""
@@ -543,7 +890,7 @@ class SmogVisionGUI(QMainWindow):
             # Get selected detector from dropdown
             detector_map = {"HOG + SVM": "hogsvm", "YOLO": "yolo", "RCNN": "rcnn"}
             selected_detector = detector_map.get(self.detector_dropdown.currentText(), "hogsvm")
-            self.worker = InferenceWorker(self.model_path, self.file_path, detector=selected_detector)
+            self.worker = InferenceWorker(self.model_path, self.file_path, detector=selected_detector, dehazing_method=self.selected_dehazing_method)
             self.worker.finished.connect(self.update_ui_with_results)
             self.worker.error.connect(self.on_processing_error)
             self.worker.start()
@@ -563,8 +910,9 @@ class SmogVisionGUI(QMainWindow):
         self.display_image(result["final_data"].get("image_input"), self.final_original_view.property("image_label"))
         # Bottom row shows detection on ORIGINAL image (not dehazed)
         self.display_image(result["final_data"].get("segmented_image_original"), self.final_result_view.property("image_label"))
-        # Store the original-based result for viewer
-        self.current_final_image = result["final_data"].get("segmented_image_original") or result["final_data"].get("image_input")
+        # Store both detection results for viewers
+        self.segmented_image_dehazed = result["final_data"].get("segmented_image")
+        self.segmented_image_original = result["final_data"].get("segmented_image_original") or result["final_data"].get("image_input")
         
         # Update metrics
         for stage_result in result["stages"]:
@@ -578,10 +926,13 @@ class SmogVisionGUI(QMainWindow):
                 proc_time = classification.get("processing_time_ms", 0)
                 total_time += proc_time
                 
-                self.update_metric_row(self.cnn_metrics, "Accuracy", f"{classification.get('confidence', 0)*100:.1f}%")
-                self.update_metric_row(self.cnn_metrics, "Precision", f"{classification.get('precision', 0):.2f}")
-                self.update_metric_row(self.cnn_metrics, "Recall", f"{classification.get('recall', 0):.2f}")
-                self.update_metric_row(self.cnn_metrics, "F1-Score", f"{classification.get('f1_score', 0):.2f}")
+                confidence = classification.get('confidence', 0)
+                prob_smog = classification.get('probability_smog', 0)
+                prob_clear = classification.get('probability_clear', 0)
+                
+                self.update_metric_row(self.cnn_metrics, "Confidence", f"{confidence*100:.1f}%")
+                self.update_metric_row(self.cnn_metrics, "Probability Smog", f"{prob_smog*100:.1f}%")
+                self.update_metric_row(self.cnn_metrics, "Probability Clear", f"{prob_clear*100:.1f}%")
                 self.update_metric_row(self.cnn_metrics, "Processing Time", f"{proc_time}ms")
                 
                 # Predicted Class Logic
@@ -595,18 +946,32 @@ class SmogVisionGUI(QMainWindow):
                 else:
                     class_row_label.setStyleSheet("color: #10B981; font-weight: bold; font-size: 13px;")
             
-            elif stage_name == "DCP Dehazing":
+            elif stage_name in ("DCP Dehazing", "CLAHE Dehazing"):
+                # Handle DCP metrics
                 dcp = data.get("dcp_metrics", {})
                 if dcp:
                     # Get real processing time from DCP metrics
                     proc_time = dcp.get("processing_time_ms", 0)
                     total_time += proc_time
                     
+                    self.dcp_metrics.setVisible(True)
+                    self.clahe_metrics.setVisible(False)
                     airlight = dcp.get("airlight_rgb", (0, 0, 0))
                     self.update_metric_row(self.dcp_metrics, "Transmission Map", f"{dcp.get('transmission_map', 0):.3f}")
                     self.update_metric_row(self.dcp_metrics, "Dark Channel",     f"{dcp.get('dark_channel', 0):.3f}")
                     self.update_metric_row(self.dcp_metrics, "Airlight RGB",     f"({airlight[0]}, {airlight[1]}, {airlight[2]})")
                     self.update_metric_row(self.dcp_metrics, "Processing Time",  f"{proc_time}ms")
+                
+                # Handle CLAHE metrics
+                clahe = data.get("clahe_metrics", {})
+                if clahe:
+                    # Get real processing time from CLAHE metrics
+                    proc_time = clahe.get("processing_time_ms", 0)
+                    total_time += proc_time
+                    
+                    self.dcp_metrics.setVisible(False)
+                    self.clahe_metrics.setVisible(True)
+                    self.update_metric_row(self.clahe_metrics, "Processing Time",  f"{proc_time}ms")
             
             elif stage_name == "HOG+SVM Object Detection":
                 hog = data.get("hog_metrics", {})
@@ -615,7 +980,7 @@ class SmogVisionGUI(QMainWindow):
                     proc_time = hog.get("processing_time_ms", 0)
                     total_time += proc_time
 
-                    self.hog_svm_metrics.property("title_label").setText("HOG + SVM")
+                    self.update_detection_metrics_title("HOG + SVM")
                     self.hog_svm_metrics.setVisible(True)
                     self.yolo_metrics.setVisible(False)
                     self.rcnn_metrics.setVisible(False)
@@ -637,7 +1002,7 @@ class SmogVisionGUI(QMainWindow):
                     total_time += proc_time
 
                     # Ensure the YOLO metrics box is visible
-                    self.yolo_metrics.property("title_label").setText("YOLO Detector")
+                    self.update_detection_metrics_title("YOLO")
                     self.yolo_metrics.setVisible(True)
                     self.hog_svm_metrics.setVisible(False)
                     self.rcnn_metrics.setVisible(False)
@@ -662,7 +1027,7 @@ class SmogVisionGUI(QMainWindow):
                     total_time += proc_time
 
                     # Ensure RCNN metrics box is visible
-                    self.rcnn_metrics.property("title_label").setText("RCNN Detector")
+                    self.update_detection_metrics_title("RCNN")
                     self.rcnn_metrics.setVisible(True)
                     self.hog_svm_metrics.setVisible(False)
                     self.yolo_metrics.setVisible(False)
@@ -678,6 +1043,19 @@ class SmogVisionGUI(QMainWindow):
                                                      str(rcnn.get("total_detections_original", 0)))
                 else:
                     self.rcnn_metrics.setVisible(False)
+            
+            elif stage_name == "Mask Generation":
+                mask_data = data.get("mask_metrics", {})
+                if mask_data:
+                    proc_time = mask_data.get("processing_time_ms", 0)
+                    total_time += proc_time
+                    
+                    # Store masks for viewing/download
+                    self.mask_dehazed = data.get("mask_dehazed")
+                    self.mask_original = data.get("mask_original")
+                    
+                    # Enable View Masks button
+                    self.view_masks_btn.setEnabled(True)
         
         self.total_time_label.property("value_label").setText(f"{total_time}ms")
         self.total_time_label.setVisible(True)
