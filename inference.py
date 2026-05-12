@@ -22,16 +22,15 @@ class SmogClassifier:
         self.class_names = ["Clear", "Smog"]
         
     def _load_model(self, model_path: str):
-        """Load ResNet18 model from checkpoint (Sequential head, Sigmoid, weights=None)."""
+        """Load ResNet18 model from checkpoint (Linear head, no Sigmoid)."""
         model = models.resnet18(weights=None)
         num_features = model.fc.in_features
-        model.fc = nn.Sequential(
-            nn.Linear(num_features, 1),
-            nn.Sigmoid()
-        )
+        # Use Linear, NOT Sequential (matches your saved model)
+        model.fc = nn.Linear(num_features, 1)
+        
         # Load checkpoint
         state_dict = torch.load(model_path, map_location=self.device)
-        model.load_state_dict(state_dict)
+        model.load_state_dict(state_dict)  # This will now work
         model.to(self.device)
         model.eval()
         return model
@@ -60,7 +59,8 @@ class SmogClassifier:
                 - class: "Clear" or "Smog"
                 - confidence: float [0-1]
                 - logit: raw model output
-                - probabilities: dict with class probabilities
+                - probability_clear: float [0-1]
+                - probability_smog: float [0-1]
         """
         # Load image
         if image_path:
@@ -78,7 +78,8 @@ class SmogClassifier:
         
         # Predict
         with torch.inference_mode():
-            prob = self.model(image_tensor).item()  # Already sigmoid
+            logit = self.model(image_tensor).item()  # Raw logit (no sigmoid)
+            prob = torch.sigmoid(torch.tensor(logit)).item()  # Apply sigmoid manually
 
         predicted_class = "Smog" if prob > 0.5 else "Clear"
         confidence = prob if prob > 0.5 else 1.0 - prob
@@ -86,11 +87,7 @@ class SmogClassifier:
         return {
             "class": predicted_class,
             "confidence": float(confidence),
-            "logit": None,
+            "logit": float(logit),
             "probability_clear": float(1.0 - prob),
             "probability_smog": float(prob),
-            # Add your model's evaluation metrics here:
-            "precision": 0.94, # Replace with your actual model's precision
-            "recall": 0.91,    # Replace with your actual model's recall
-            "f1_score": 0.92   # Replace with your actual model's F1 score
         }
