@@ -10,7 +10,7 @@ from PIL import Image
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QMessageBox, QGroupBox,
-    QFrame, QScrollArea
+    QFrame, QScrollArea, QComboBox
 )
 from PyQt6.QtGui import QPixmap, QImage, QColor
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
@@ -72,10 +72,11 @@ class InferenceWorker(QThread):
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
     
-    def __init__(self, model_path: str, image_path: str):
+    def __init__(self, model_path: str, image_path: str, detector: str = "hogsvm"):
         super().__init__()
         self.model_path = model_path
         self.image_path = image_path
+        self.detector = detector
     
     def run(self):
         try:
@@ -83,7 +84,7 @@ class InferenceWorker(QThread):
                 self.error.emit(f"Model file not found: {self.model_path}")
                 return
             
-            pipeline = create_default_pipeline(self.model_path)
+            pipeline = create_default_pipeline(self.model_path, object_detection_model=self.detector)
             result = pipeline.run(self.image_path)
             
             self.finished.emit(result)
@@ -100,6 +101,7 @@ class SmogVisionGUI(QMainWindow):
         self.model_path = "smog-classification/smog_classifier.pth"
         self.video_worker = None
         self.inference_worker = None
+        self.detector_dropdown = None
         self.init_ui()
 
     def init_ui(self):
@@ -126,7 +128,7 @@ class SmogVisionGUI(QMainWindow):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(40, 30, 40, 30)
-        layout.setSpacing(20)
+        layout.setSpacing(12)
 
         # Title with Clouds
         title_layout = QHBoxLayout()
@@ -137,17 +139,29 @@ class SmogVisionGUI(QMainWindow):
         layout.addLayout(title_layout)
 
         # Upload Button
+        upload_row = QHBoxLayout()
         self.upload_button = QPushButton("Upload Image or Video")
         self.upload_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.upload_button.clicked.connect(self.upload_file)
-        layout.addWidget(self.upload_button, alignment=Qt.AlignmentFlag.AlignLeft)
+        upload_row.addWidget(self.upload_button)
+
+        # Detector Selection Dropdown
+        self.detector_dropdown = QComboBox()
+        self.detector_dropdown.addItems(["Select Detection Method", "HOG + SVM", "YOLO", "RCNN"])
+        self.detector_dropdown.setEnabled(True)
+        self.detector_dropdown.setVisible(True)
+        self.detector_dropdown.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        upload_row.addWidget(self.detector_dropdown)
 
         # Process Button
         self.process_button = QPushButton("Process")
         self.process_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.process_button.setEnabled(False)  # Disabled until a file is uploaded
         self.process_button.clicked.connect(self.process_file) # Connect to the process method
-        layout.addWidget(self.process_button, alignment=Qt.AlignmentFlag.AlignLeft)
+        upload_row.addWidget(self.process_button)
+
+        upload_row.addStretch()
+        layout.addLayout(upload_row)
 
         # Results area
         self.results_widget = QWidget()
@@ -237,6 +251,17 @@ class SmogVisionGUI(QMainWindow):
                                                ["People Detected", "Cars Detected", "Total Detections", "Processing Time"])
         layout.addWidget(self.hog_svm_metrics)
 
+        # Placeholders for other detectors (hidden until used)
+        self.yolo_metrics = self.create_metric_box("YOLO Detector", "Stage 3", "#10B981", "#F0FDF4",
+                              ["People Detected", "Cars Detected", "Total Detections", "Processing Time"])
+        self.yolo_metrics.setVisible(False)
+        layout.addWidget(self.yolo_metrics)
+
+        self.rcnn_metrics = self.create_metric_box("RCNN Detector", "Stage 3", "#10B981", "#F0FDF4",
+                               ["People Detected", "Cars Detected", "Total Detections", "Processing Time"])
+        self.rcnn_metrics.setVisible(False)
+        layout.addWidget(self.rcnn_metrics)
+
         layout.addStretch()
         
         self.total_time_label = self.create_metric_row("Total Pipeline Time", "0ms", highlight=True)
@@ -286,6 +311,7 @@ class SmogVisionGUI(QMainWindow):
             metric_widgets[text] = row
             
         box.setProperty("metric_widgets", metric_widgets)
+        box.setProperty("title_label", t_label)
         return box
 
     def create_metric_row(self, label_text, value_text, highlight=False):
@@ -342,11 +368,18 @@ class SmogVisionGUI(QMainWindow):
         if not self.file_path:
             QMessageBox.warning(self, "Warning", "Please select a file first.")
             return
+
+        if self.detector_dropdown.currentIndex() == 0:
+            QMessageBox.warning(self, "Warning", "Please select a detection method first.")
+            self.process_button.setEnabled(True)
+            self.process_button.setText("Process")
+            return
         
         self.results_widget.setVisible(True)
         self.process_button.setEnabled(False)
         self.process_button.setText(" Processing...")
-        
+        self.detector_dropdown.setVisible(False)        
+                                                            # ADD
         if self.file_path.lower().endswith(('.mp4', '.avi')):
             self.video_worker = VideoWorker(self.model_path, self.file_path)
             self.video_worker.frame_processed.connect(self.update_ui_with_results)
@@ -354,7 +387,10 @@ class SmogVisionGUI(QMainWindow):
             self.video_worker.error.connect(self.on_processing_error)
             self.video_worker.start()
         else:
-            self.worker = InferenceWorker(self.model_path, self.file_path)
+            # Get selected detector from dropdown
+            detector_map = {"HOG + SVM": "hogsvm", "YOLO": "yolo", "RCNN": "rcnn"}
+            selected_detector = detector_map.get(self.detector_dropdown.currentText(), "hogsvm")
+            self.worker = InferenceWorker(self.model_path, self.file_path, detector=selected_detector)
             self.worker.finished.connect(self.update_ui_with_results)
             self.worker.error.connect(self.on_processing_error)
             self.worker.start()
@@ -422,11 +458,55 @@ class SmogVisionGUI(QMainWindow):
                     # Get real processing time from HOG metrics
                     proc_time = hog.get("processing_time_ms", 0)
                     total_time += proc_time
+
+                    self.hog_svm_metrics.property("title_label").setText("HOG + SVM")
+                    self.hog_svm_metrics.setVisible(True)
+                    self.yolo_metrics.setVisible(False)
+                    self.rcnn_metrics.setVisible(False)
                     
                     self.update_metric_row(self.hog_svm_metrics, "People Detected", str(hog.get("people_count", 0)))
                     self.update_metric_row(self.hog_svm_metrics, "Cars Detected",   str(hog.get("car_count", 0)))
                     self.update_metric_row(self.hog_svm_metrics, "Total Detections", str(hog.get("total_detections", 0)))
                     self.update_metric_row(self.hog_svm_metrics, "Processing Time",  f"{proc_time}ms")
+
+            elif stage_name == "YOLO Object Detection":
+                yolo = data.get("yolo_metrics", {})
+                if yolo:
+                    proc_time = yolo.get("processing_time_ms", 0)
+                    total_time += proc_time
+
+                    # Ensure the YOLO metrics box is visible
+                    self.yolo_metrics.property("title_label").setText("YOLO Detector")
+                    self.yolo_metrics.setVisible(True)
+                    self.hog_svm_metrics.setVisible(False)
+                    self.rcnn_metrics.setVisible(False)
+
+                    self.update_metric_row(self.yolo_metrics, "People Detected", str(yolo.get("people_count", 0)))
+                    self.update_metric_row(self.yolo_metrics, "Cars Detected", str(yolo.get("car_count", 0)))
+                    self.update_metric_row(self.yolo_metrics, "Total Detections", str(yolo.get("total_detections", 0)))
+                    self.update_metric_row(self.yolo_metrics, "Processing Time", f"{proc_time:.1f}ms")
+                else:
+                    # Hide YOLO box if no metrics
+                    self.yolo_metrics.setVisible(False)
+
+            elif stage_name == "RCNN Object Detection":
+                rcnn = data.get("rcnn_metrics", {})
+                if rcnn:
+                    proc_time = rcnn.get("processing_time_ms", 0)
+                    total_time += proc_time
+
+                    # Ensure RCNN metrics box is visible
+                    self.rcnn_metrics.property("title_label").setText("RCNN Detector")
+                    self.rcnn_metrics.setVisible(True)
+                    self.hog_svm_metrics.setVisible(False)
+                    self.yolo_metrics.setVisible(False)
+
+                    self.update_metric_row(self.rcnn_metrics, "People Detected", str(rcnn.get("people_count", 0)))
+                    self.update_metric_row(self.rcnn_metrics, "Cars Detected",   str(rcnn.get("car_count", 0)))
+                    self.update_metric_row(self.rcnn_metrics, "Total Detections", str(rcnn.get("total_detections", 0)))
+                    self.update_metric_row(self.rcnn_metrics, "Processing Time",  f"{proc_time:.1f}ms")
+                else:
+                    self.rcnn_metrics.setVisible(False)
         
         self.total_time_label.property("value_label").setText(f"{total_time}ms")
         self.total_time_label.setVisible(True)
@@ -444,6 +524,7 @@ class SmogVisionGUI(QMainWindow):
         """Reset button state after processing."""
         self.process_button.setEnabled(True)
         self.process_button.setText("Process")
+        self.detector_dropdown.setVisible(True)           
     
     def on_processing_error(self, error_msg: str):
         """Show error message."""
@@ -501,7 +582,7 @@ class SmogVisionGUI(QMainWindow):
             /* Ensure internal metric rows don't have borders */
             QWidget#totalBox { 
                 background-color: #F3F4F6; 
-                border-radius: 8px; 
+                border-radius:8px; 
                 border: none;
                 padding: 10px;
                 margin-top: 20px;
@@ -513,7 +594,7 @@ class SmogVisionGUI(QMainWindow):
                 background-color: #FFFFFF;
                 border: 1px solid #E5E7EB;
                 border-radius: 10px;
-                padding: 12px 20px;
+                padding: 8px 20px;
                 font-weight: 600;
                 color: #374151;
             }
@@ -530,7 +611,25 @@ class SmogVisionGUI(QMainWindow):
             QLabel#imageSubTitle { color: #6B7280; font-size: 12px; font-weight: 500; margin-top: 5px; }
             
             QLabel#stageLabel { color: #9CA3AF; font-size: 10px; font-weight: 600; }
-            
+            QComboBox {
+                background-color: #FFFFFF;
+                border: 1px solid #E5E7EB;
+                border-radius: 10px;
+                padding: 6px 20px;
+                font-weight: 600;
+                color: #374151;
+                min-width: 160px;
+            }
+            QComboBox:hover { background-color: #F3F4F6; }
+            QComboBox::drop-down { border: none; width: 30px; }
+            QComboBox QAbstractItemView {
+                background-color: #FFFFFF;
+                border: 1px solid #E5E7EB;
+                border-radius: 10px;
+                selection-background-color: #F3F4F6;
+                color: #374151;
+            }
+                        
         """)
 
 
