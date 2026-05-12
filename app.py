@@ -241,7 +241,7 @@ class SmogVisionGUI(QMainWindow):
         pipeline_layout = QHBoxLayout()
         self.original_view = self.create_image_view("Original")
         self.dehazed_view = self.create_image_view("Dehazed (DCP)")
-        self.segmented_view = self.create_image_view("Objects Segmented")
+        self.segmented_view = self.create_image_view("Final Ressult - Dehazed")
         
         # Change this in create_left_panel
         pipeline_layout.addWidget(self.original_view, 1) # Added stretch factor 1
@@ -256,7 +256,7 @@ class SmogVisionGUI(QMainWindow):
         comparison_group = QGroupBox("Comparison")
         comparison_layout = QHBoxLayout()
         self.final_original_view = self.create_image_view("Original")
-        self.final_result_view = self.create_image_view("Final Result")
+        self.final_result_view = self.create_image_view("Final Result - Original")
         final_result_label = self.final_result_view.property("image_label")
         final_result_label.setCursor(Qt.CursorShape.PointingHandCursor)
         final_result_label.clicked.connect(self.open_final_result_viewer)
