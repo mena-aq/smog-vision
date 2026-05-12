@@ -137,11 +137,12 @@ class InferenceWorker(QThread):
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
     
-    def __init__(self, model_path: str, image_path: str, detector: str = "hogsvm"):
+    def __init__(self, model_path: str, image_path: str, detector: str = "hogsvm", dehazing_method: str = "dcp"):
         super().__init__()
         self.model_path = model_path
         self.image_path = image_path
         self.detector = detector
+        self.dehazing_method = dehazing_method
     
     def run(self):
         try:
@@ -149,7 +150,7 @@ class InferenceWorker(QThread):
                 self.error.emit(f"Model file not found: {self.model_path}")
                 return
             
-            pipeline = create_default_pipeline(self.model_path, object_detection_model=self.detector)
+            pipeline = create_default_pipeline(self.model_path, object_detection_model=self.detector, dehazing_method=self.dehazing_method)
             result = pipeline.run(self.image_path)
             
             self.finished.emit(result)
@@ -167,7 +168,10 @@ class SmogVisionGUI(QMainWindow):
         self.video_worker = None
         self.inference_worker = None
         self.detector_dropdown = None
-        self.current_final_image = None
+        self.dehazing_method_dropdown = None
+        self.selected_dehazing_method = "dcp"  # Default dehazing method
+        self.segmented_image_dehazed = None  # Top row - Pipeline Output
+        self.segmented_image_original = None  # Bottom row - Comparison
         self.init_ui()
 
     def init_ui(self):
@@ -211,6 +215,13 @@ class SmogVisionGUI(QMainWindow):
         self.upload_button.clicked.connect(self.upload_file)
         upload_row.addWidget(self.upload_button)
 
+        # Dehazing Method Selection Dropdown
+        self.dehazing_method_dropdown = QComboBox()
+        self.dehazing_method_dropdown.addItems(["Select Dehazing Method", "DCP", "CLAHE"])
+        self.dehazing_method_dropdown.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.dehazing_method_dropdown.currentTextChanged.connect(self.on_dehazing_method_changed)
+        upload_row.addWidget(self.dehazing_method_dropdown)
+
         # Detector Selection Dropdown
         self.detector_dropdown = QComboBox()
         self.detector_dropdown.addItems(["Select Detection Method", "HOG + SVM", "YOLO", "RCNN"])
@@ -219,6 +230,7 @@ class SmogVisionGUI(QMainWindow):
         self.detector_dropdown.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self.detector_dropdown.currentTextChanged.connect(self.on_detector_changed)
         upload_row.addWidget(self.detector_dropdown)
+
 
         # Process Button
         self.process_button = QPushButton("Process")
@@ -243,6 +255,11 @@ class SmogVisionGUI(QMainWindow):
         self.original_view = self.create_image_view("Original")
         self.dehazed_view = self.create_image_view("Dehazed (DCP)")
         self.segmented_view = self.create_image_view("Final Ressult - Dehazed")
+
+        # Make segmented view clickable (top row - Pipeline Output)
+        segmented_label = self.segmented_view.property("image_label")
+        segmented_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        segmented_label.clicked.connect(lambda: self.open_segmented_viewer("dehazed"))
         
         # Change this in create_left_panel
         pipeline_layout.addWidget(self.original_view, 1) # Added stretch factor 1
@@ -260,7 +277,7 @@ class SmogVisionGUI(QMainWindow):
         self.final_result_view = self.create_image_view("Final Result - Original")
         final_result_label = self.final_result_view.property("image_label")
         final_result_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        final_result_label.clicked.connect(self.open_final_result_viewer)
+        final_result_label.clicked.connect(lambda: self.open_segmented_viewer("original"))
         
         comparison_layout.addWidget(self.final_original_view)
         comparison_layout.addWidget(self.create_arrow(large=True))
@@ -293,11 +310,16 @@ class SmogVisionGUI(QMainWindow):
         widget.setProperty("image_label", label)
         return widget
 
-    def open_final_result_viewer(self):
-        if self.current_final_image is None:
+    def open_segmented_viewer(self, view_type: str):
+        """Open viewer for segmented results (dehazed or original)."""
+        if view_type == "dehazed" and self.segmented_image_dehazed is None:
+            return
+        if view_type == "original" and self.segmented_image_original is None:
             return
 
-        viewer = ImageViewerDialog(self.current_final_image, "Final Result", self)
+        image = self.segmented_image_dehazed if view_type == "dehazed" else self.segmented_image_original
+        title = "Detection Result - Dehazed" if view_type == "dehazed" else "Detection Result - Original"
+        viewer = ImageViewerDialog(image, title, self)
         viewer.exec()
 
     def create_right_panel(self):
@@ -491,6 +513,10 @@ class SmogVisionGUI(QMainWindow):
         """Update the object-detection metrics title as soon as the dropdown changes."""
         self.update_detection_metrics_title(selected_method)
 
+    def on_dehazing_method_changed(self, selected_method: str):
+        """Update the selected dehazing method."""
+        self.selected_dehazing_method = selected_method.lower()
+
     def update_detection_metrics_title(self, selected_method: str):
         """Set the active object-detection metrics title from the selected detector."""
         method_titles = {
@@ -563,7 +589,7 @@ class SmogVisionGUI(QMainWindow):
             # Get selected detector from dropdown
             detector_map = {"HOG + SVM": "hogsvm", "YOLO": "yolo", "RCNN": "rcnn"}
             selected_detector = detector_map.get(self.detector_dropdown.currentText(), "hogsvm")
-            self.worker = InferenceWorker(self.model_path, self.file_path, detector=selected_detector)
+            self.worker = InferenceWorker(self.model_path, self.file_path, detector=selected_detector, dehazing_method=self.selected_dehazing_method)
             self.worker.finished.connect(self.update_ui_with_results)
             self.worker.error.connect(self.on_processing_error)
             self.worker.start()
@@ -583,8 +609,9 @@ class SmogVisionGUI(QMainWindow):
         self.display_image(result["final_data"].get("image_input"), self.final_original_view.property("image_label"))
         # Bottom row shows detection on ORIGINAL image (not dehazed)
         self.display_image(result["final_data"].get("segmented_image_original"), self.final_result_view.property("image_label"))
-        # Store the original-based result for viewer
-        self.current_final_image = result["final_data"].get("segmented_image_original") or result["final_data"].get("image_input")
+        # Store both detection results for viewers
+        self.segmented_image_dehazed = result["final_data"].get("segmented_image")
+        self.segmented_image_original = result["final_data"].get("segmented_image_original") or result["final_data"].get("image_input")
         
         # Update metrics
         for stage_result in result["stages"]:
