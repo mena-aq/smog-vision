@@ -475,12 +475,12 @@ class HOGSVMObjectDetectionStage(PipelineStage):
 class YOLOObjectDetectionStage(PipelineStage):
     """YOLO-based object detection for vehicles and pedestrians."""
     
-    def __init__(self, model_path: str = "yolo26n.pt", confidence_threshold: float = 0.5, device: str = None):
+    def __init__(self, model_path: str = "yolo8m.pt", confidence_threshold: float = 0.5, device: str = None):
         """
         Initialize YOLO detector.
         
         Args:
-            model_path: YOLO model to use (default: "yolo26n.pt" for best CPU performance)
+            model_path: YOLO model to use (default: "yolo8m.pt" for best CPU performance)
                        Options: "yolo26n.pt", "yolov8n.pt", "yolov11n.pt", or path to custom model
             confidence_threshold: Minimum confidence for detections (0-1)
             device: 'cuda', 'cpu', or None (auto-detect)
@@ -727,69 +727,222 @@ class YOLOObjectDetectionStage(PipelineStage):
         return segmented_pil, detections, person_count, vehicle_count
 
 class RCNNObjectDetectionStage(PipelineStage):
-    """Placeholder for RCNN-based object detection."""
+    """Faster R-CNN based object detection for vehicles and pedestrians."""
 
-    def __init__(self, model_path: str = None):
+    def __init__(self, confidence_threshold: float = 0.5, device: str = None):
+        """
+        Initialize Faster R-CNN detector.
+        
+        Args:
+            confidence_threshold: Minimum confidence for detections (0-1)
+            device: 'cuda', 'cpu', or None (auto-detect)
+        """
         super().__init__("RCNN Object Detection")
-        self.model_path = model_path
+        
+        self.confidence_threshold = confidence_threshold
+        self.device = device or ("cuda" if self._check_cuda() else "cpu")
+        
+        # Load pre-trained Faster R-CNN model
+        print("Loading Faster R-CNN model...")
+        try:
+            import torch
+            import torchvision
+            from torchvision.models.detection import fasterrcnn_resnet50_fpn_v2
+            
+            self.model = fasterrcnn_resnet50_fpn_v2(
+                weights='DEFAULT',
+                box_score_thresh=self.confidence_threshold
+            )
+            self.model.to(self.device)
+            self.model.eval()
+            print(f"Faster R-CNN loaded successfully on {self.device}")
+        except Exception as e:
+            print(f"Error loading Faster R-CNN: {e}")
+            raise
+        
+        # COCO classes we care about, aligned with the YOLO/HOG+SVM labels.
+        self.coco_classes = {
+            1: 'person',
+            2: 'bicycle',
+            3: 'car',
+            4: 'motorcycle',
+            6: 'bus',
+            8: 'truck',
+        }
+        
+        # Color coding matches the HOG/YOLO stages.
+        self.person_color = (0, 255, 0)      # Green for people
+        self.vehicle_color = (0, 165, 255)   # Orange for vehicles
+
+    def _check_cuda(self) -> bool:
+        """Check if CUDA is available."""
+        try:
+            import torch
+            return torch.cuda.is_available()
+        except:
+            return False
 
     def process(self, input_data: dict) -> PipelineResult:
         """
-        Placeholder RCNN stage - outputs both images unchanged.
-
+        Detect objects using Faster R-CNN on both dehazed and original images.
+        
         Input:  {"image_input": <PIL Image>, "dehazed_image": <PIL Image>, ...}
-        Output: {"segmented_image": <dehazed>, "segmented_image_original": <original>, ...}
+        Output: {"segmented_image": <on dehazed>, "segmented_image_original": <on original>, ...}
         """
         try:
-            start = time.time()
-
+            start_time = time.time()
+            
+            # Get both source images
             dehazed_source = input_data.get("dehazed_image")
             original_source = input_data.get("image_input")
-            elapsed_ms = round((time.time() - start) * 1000, 1)
-
+            
+            if dehazed_source is None or original_source is None:
+                raise ValueError("Both dehazed_image and image_input are required")
+            
+            # Run detection on dehazed and original
+            segmented_dcp, detections_dcp, person_count_dcp, vehicle_count_dcp = self._run_rcnn_on_image(dehazed_source)
+            segmented_orig, detections_orig, person_count_orig, vehicle_count_orig = self._run_rcnn_on_image(original_source)
+            
+            processing_time_ms = (time.time() - start_time) * 1000
+            
             rcnn_metrics = {
-                "model_path": self.model_path,
-                "people_count_dehazed": 0,
-                "car_count_dehazed": 0,
-                "total_detections_dehazed": 0,
-                "people_count_original": 0,
-                "car_count_original": 0,
-                "total_detections_original": 0,
-                "processing_time_ms": elapsed_ms,
+                "model": "Faster R-CNN ResNet50",
+                "people_count_dehazed": person_count_dcp,
+                "car_count_dehazed": vehicle_count_dcp,
+                "total_detections_dehazed": len(detections_dcp),
+                "people_count_original": person_count_orig,
+                "car_count_original": vehicle_count_orig,
+                "total_detections_original": len(detections_orig),
+                "processing_time_ms": processing_time_ms,
+                "confidence_threshold": self.confidence_threshold,
+                "detections": detections_orig
             }
-
+            
+            if len(detections_orig) > 0:
+                print(f"Faster R-CNN: {person_count_orig} people, {vehicle_count_orig} vehicles in {processing_time_ms:.1f}ms")
+            else:
+                print(f"Faster R-CNN: No detections in {processing_time_ms:.1f}ms (confidence threshold: {self.confidence_threshold})")
+            
             return PipelineResult(
                 stage_name=self.name,
                 success=True,
                 data={
                     **input_data,
-                    "segmented_image": dehazed_source,
-                    "segmented_image_original": original_source,
-                    "detections": [],
+                    "segmented_image": segmented_dcp,
+                    "segmented_image_original": segmented_orig,
+                    "detections": detections_orig,
                     "rcnn_metrics": rcnn_metrics,
                 },
             )
+            
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return PipelineResult(
                 stage_name=self.name,
                 success=False,
                 data={},
-                error=str(e),
+                error=f"Faster R-CNN detection error: {str(e)}",
             )
+    
+    def _run_rcnn_on_image(self, source):
+        """
+        Helper: Run Faster R-CNN detection on a single image.
+        Returns: (segmented_pil, detections_list, person_count, vehicle_count)
+        """
+        import torch
+        import torchvision.transforms as transforms
+        
+        # Convert to PIL if needed
+        if isinstance(source, str):
+            img_pil = Image.open(source).convert("RGB")
+        elif isinstance(source, Image.Image):
+            img_pil = source.convert("RGB")
+        elif isinstance(source, np.ndarray):
+            img_pil = Image.fromarray(source.astype(np.uint8))
+        else:
+            raise TypeError(f"Unsupported image type: {type(source)}")
+        
+        # Convert to tensor for model
+        img_tensor = transforms.ToTensor()(img_pil).to(self.device)
+        
+        # Run inference
+        with torch.no_grad():
+            predictions = self.model([img_tensor])
+        
+        # Extract results
+        boxes = predictions[0]['boxes'].cpu().numpy().astype(int)
+        scores = predictions[0]['scores'].cpu().numpy()
+        labels = predictions[0]['labels'].cpu().numpy()
+        
+        # Filter by confidence and convert to numpy for drawing
+        img_np = np.array(img_pil)
+        annotated_img = img_np.copy()
+        
+        detections = []
+        person_count = 0
+        vehicle_count = 0
+        
+        for box, score, label in zip(boxes, scores, labels):
+            if score < self.confidence_threshold:
+                continue
+            
+            if label not in self.coco_classes:
+                continue
+            
+            class_name = self.coco_classes[label]
+            x1, y1, x2, y2 = box
+            
+            # Count
+            if class_name == 'person':
+                person_count += 1
+                color_rgb = self.person_color
+            else:
+                vehicle_count += 1
+                color_rgb = self.vehicle_color
+            
+            # Store detection
+            detections.append({
+                "type": class_name,
+                "bbox": [int(x1), int(y1), int(x2 - x1), int(y2 - y1)],
+                "confidence": float(score)
+            })
+            
+            # Draw box
+            color_bgr = (color_rgb[2], color_rgb[1], color_rgb[0])
+            cv2.rectangle(annotated_img, (x1, y1), (x2, y2), color_bgr, 2)
+            
+            # Draw label with confidence
+            label_text = f"{class_name}: {score:.2f}"
+            font_scale = 0.55
+            thickness = 1
+            (text_width, text_height), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+            
+            # Label background
+            y_label = max(y1 - 6, text_height + 5)
+            cv2.rectangle(annotated_img, (x1, y_label - text_height - 6), 
+                        (x1 + text_width + 4, y_label), color_bgr, -1)
+            cv2.putText(annotated_img, label_text, (x1 + 2, y_label - 4),
+                       cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+        
+        # Convert back to PIL
+        segmented_pil = Image.fromarray(annotated_img)
+        
+        return segmented_pil, detections, person_count, vehicle_count
 
 
-def create_default_pipeline(model_path: str, object_detection_model: str = "yolo"):
+def create_default_pipeline(model_path: str, object_detection_model: str = "yolo", dehazing_method: str = "clahe"):
     """Create a pipeline with all stages."""
     
     pipeline = SmogClassificationPipeline()
     pipeline.add_stage(SmogClassificationStage(model_path))
-    pipeline.add_stage(DCPDehazingStage())
+    pipeline.add_stage(DehazingStage(method=dehazing_method))
 
     detection_model = (object_detection_model or "hogsvm").strip().lower()
     if detection_model == "yolo":
         pipeline.add_stage(YOLOObjectDetectionStage(
             model_path="yolo26n.pt",  # Best for CPU
-            confidence_threshold=0.25   # Slightly lower for smoggy images
+            confidence_threshold=0.4   # Slightly lower for smoggy images
         ))
     elif detection_model == "rcnn":
         pipeline.add_stage(RCNNObjectDetectionStage())

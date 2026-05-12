@@ -55,3 +55,6 @@ Thumbs.db
 
 #yolo
 yolo26n.pt
+
+#haar
+haarcascade_car.xml
