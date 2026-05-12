@@ -346,6 +346,11 @@ class SmogVisionGUI(QMainWindow):
                                                ["Transmission Map", "Dark Channel", "Airlight RGB", "Processing Time"])
         layout.addWidget(self.dcp_metrics)
 
+        self.clahe_metrics = self.create_metric_box("CLAHE Dehazing", "Stage 2", "#F59E0B", "#FFFBEB", 
+                                                ["Processing Time"])
+        self.clahe_metrics.setVisible(False)
+        layout.addWidget(self.clahe_metrics)
+
         self.hog_svm_metrics = self.create_comparison_metric_box("HOG + SVM", "Stage 3", "#10B981", "#F0FDF4",
                                                ["People Detected", "Cars Detected", "Total Detections"])
         layout.addWidget(self.hog_svm_metrics)
@@ -642,18 +647,32 @@ class SmogVisionGUI(QMainWindow):
                 else:
                     class_row_label.setStyleSheet("color: #10B981; font-weight: bold; font-size: 13px;")
             
-            elif stage_name == "DCP Dehazing":
+            elif stage_name in ("DCP Dehazing", "CLAHE Dehazing"):
+                # Handle DCP metrics
                 dcp = data.get("dcp_metrics", {})
                 if dcp:
                     # Get real processing time from DCP metrics
                     proc_time = dcp.get("processing_time_ms", 0)
                     total_time += proc_time
                     
+                    self.dcp_metrics.setVisible(True)
+                    self.clahe_metrics.setVisible(False)
                     airlight = dcp.get("airlight_rgb", (0, 0, 0))
                     self.update_metric_row(self.dcp_metrics, "Transmission Map", f"{dcp.get('transmission_map', 0):.3f}")
                     self.update_metric_row(self.dcp_metrics, "Dark Channel",     f"{dcp.get('dark_channel', 0):.3f}")
                     self.update_metric_row(self.dcp_metrics, "Airlight RGB",     f"({airlight[0]}, {airlight[1]}, {airlight[2]})")
                     self.update_metric_row(self.dcp_metrics, "Processing Time",  f"{proc_time}ms")
+                
+                # Handle CLAHE metrics
+                clahe = data.get("clahe_metrics", {})
+                if clahe:
+                    # Get real processing time from CLAHE metrics
+                    proc_time = clahe.get("processing_time_ms", 0)
+                    total_time += proc_time
+                    
+                    self.dcp_metrics.setVisible(False)
+                    self.clahe_metrics.setVisible(True)
+                    self.update_metric_row(self.clahe_metrics, "Processing Time",  f"{proc_time}ms")
             
             elif stage_name == "HOG+SVM Object Detection":
                 hog = data.get("hog_metrics", {})

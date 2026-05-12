@@ -69,7 +69,7 @@ class SmogClassificationStage(PipelineStage):
 class DehazingStage(PipelineStage):
     """Dehazing stage supporting DCP and CLAHE methods."""
     
-    def __init__(self, method: str = "dcp", patch_size: int = 15, omega: float = 0.95, t_min: float = 0.1, clahe_clip: float = 3.0, clahe_tile: int = 8):
+    def __init__(self, method: str = "dcp", patch_size: int = 15, omega: float = 0.95, t_min: float = 0.1, clahe_clip: float = 3.5, clahe_tile: int = 8, color_boost: float = 1.3):
         """
         Args:
             method:     Dehazing algorithm: "dcp" (Dark Channel Prior) or "clahe" (CLAHE-based)
@@ -78,6 +78,7 @@ class DehazingStage(PipelineStage):
             t_min:      Minimum transmission value to avoid division by zero (DCP only, default 0.1).
             clahe_clip: Contrast limit for CLAHE (CLAHE only, default 3.0).
             clahe_tile: Tile grid size for CLAHE (CLAHE only, default 8 for 8x8 grid).
+            color_boost: Factor to boost color saturation (both methods, default 1.3).
         """
         super().__init__("DCP Dehazing" if method == "dcp" else "CLAHE Dehazing")
         self.method = method.lower()
@@ -86,6 +87,8 @@ class DehazingStage(PipelineStage):
         self.t_min = t_min
         self.clahe_clip = clahe_clip
         self.clahe_tile = clahe_tile
+        self.color_boost = color_boost
+
         
         if self.method not in ("dcp", "clahe"):
             raise ValueError(f"Unknown dehazing method: {method}. Use 'dcp' or 'clahe'.")
@@ -156,10 +159,14 @@ class DehazingStage(PipelineStage):
         # Apply CLAHE to L channel only (preserves color)
         clahe = cv2.createCLAHE(clipLimit=self.clahe_clip, tileGridSize=(self.clahe_tile, self.clahe_tile))
         l_clahe = clahe.apply(l)
+
+        a_boosted = np.clip(128 + (a.astype(np.float32) - 128) * self.color_boost, 0, 255).astype(np.uint8)
+        b_boosted = np.clip(128 + (b.astype(np.float32) - 128) * self.color_boost, 0, 255).astype(np.uint8)
+    
         
         # Merge back
-        lab_clahe = cv2.merge([l_clahe, a, b])
-        result_uint8 = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2RGB)
+        lab_enhanced = cv2.merge([l_clahe, a_boosted, b_boosted])
+        result_uint8 = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2RGB)
         
         return result_uint8.astype(np.float32) / 255.0
 
@@ -966,7 +973,7 @@ class RCNNObjectDetectionStage(PipelineStage):
         return segmented_pil, detections, person_count, vehicle_count
 
 
-def create_default_pipeline(model_path: str, object_detection_model: str = "yolo", dehazing_method: str = "dcp"):
+def create_default_pipeline(model_path: str, object_detection_model: str = "yolo", dehazing_method: str = "clahe"):
     """Create a pipeline with all stages."""
     
     pipeline = SmogClassificationPipeline()
