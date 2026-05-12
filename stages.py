@@ -131,6 +131,8 @@ class DehazingStage(PipelineStage):
 
             elapsed = time.time() - start
 
+            # Handle any remaining NaN/inf values before converting to uint8
+            dehazed_np = np.nan_to_num(dehazed_np, nan=0.0, posinf=1.0, neginf=0.0)
             dehazed_pil = Image.fromarray(
                 (dehazed_np * 255).clip(0, 255).astype(np.uint8)
             )
@@ -263,6 +265,8 @@ class DehazingStage(PipelineStage):
         cov_Ip = mean_Ip - mean_I * mean_p
         mean_II = cv2.boxFilter(I * I, cv2.CV_64F, (radius, radius)).astype(np.float32)
         var_I   = mean_II - mean_I * mean_I
+        # Ensure variance is always non-negative and not too small to avoid NaN
+        var_I = np.maximum(var_I, eps)
 
         # Linear coefficients
         a = cov_Ip / (var_I + eps)
@@ -273,6 +277,8 @@ class DehazingStage(PipelineStage):
         mean_b = cv2.boxFilter(b, cv2.CV_64F, (radius, radius)).astype(np.float32)
 
         refined = (mean_a * I + mean_b).clip(self.t_min, 1.0)
+        # Handle any NaN values from numerical issues
+        refined = np.nan_to_num(refined, nan=self.t_min, posinf=1.0, neginf=self.t_min)
         return refined
 
     def _recover(
@@ -282,8 +288,14 @@ class DehazingStage(PipelineStage):
         Recover the haze-free image using:
             J(x) = (I(x) - A) / max(t(x), t_min) + A
         """
+        # Ensure transmission map is valid and >= t_min to avoid division issues
+        t = np.clip(t, self.t_min, 1.0)
+        t = np.nan_to_num(t, nan=self.t_min, posinf=1.0, neginf=self.t_min)
+        
         t3 = t[:, :, np.newaxis]           # (H, W, 1) for broadcasting
         J  = (img - A) / t3 + A
+        # Clip before power to avoid NaN from negative values
+        J = J.clip(0.0, 1.0)
         gamma = 0.9
         J = np.power(J, gamma)
         return J.clip(0.0, 1.0)
