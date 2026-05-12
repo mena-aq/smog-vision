@@ -7,6 +7,7 @@ import numpy as np
 from inference import SmogClassifier
 from pipeline import PipelineStage, PipelineResult
 from pipeline import SmogClassificationPipeline
+from ultralytics import YOLO
 
 
 class SmogClassificationStage(PipelineStage):
@@ -69,7 +70,7 @@ class SmogClassificationStage(PipelineStage):
 class DCPDehazingStage(PipelineStage):
     """Placeholder for DCP Dehazing stage."""
     
-    def __init__(self, patch_size: int = 15, omega: float = 0.95, t_min: float = 0.1):
+    def __init__(self, patch_size: int = 15, omega: float = 0.75, t_min: float = 0.2):
         """
         Args:
             patch_size: Size of the local patch for dark channel computation (default 15).
@@ -187,7 +188,7 @@ class DCPDehazingStage(PipelineStage):
         self,
         guide: np.ndarray,
         src: np.ndarray,
-        radius: int = 40,
+        radius: int = 20,
         eps: float = 1e-3,
     ) -> np.ndarray:
         """
@@ -239,6 +240,8 @@ class DCPDehazingStage(PipelineStage):
         """
         t3 = t[:, :, np.newaxis]           # (H, W, 1) for broadcasting
         J  = (img - A) / t3 + A
+        gamma = 0.9
+        J = np.power(J, gamma)
         return J.clip(0.0, 1.0)
 
     @staticmethod
@@ -468,16 +471,6 @@ class HOGSVMObjectDetectionStage(PipelineStage):
             return image_input.astype(np.uint8)
         else:
             raise TypeError(f"Unsupported image type: {type(image_input)}")
-
-
-import os
-import time
-import numpy as np
-from PIL import Image
-import cv2
-from ultralytics import YOLO
-from pipeline import PipelineStage, PipelineResult
-
 
 class YOLOObjectDetectionStage(PipelineStage):
     """YOLO-based object detection for vehicles and pedestrians."""
@@ -796,7 +789,7 @@ def create_default_pipeline(model_path: str, object_detection_model: str = "yolo
     if detection_model == "yolo":
         pipeline.add_stage(YOLOObjectDetectionStage(
             model_path="yolo26n.pt",  # Best for CPU
-            confidence_threshold=0.4   # Slightly lower for smoggy images
+            confidence_threshold=0.25   # Slightly lower for smoggy images
         ))
     elif detection_model == "rcnn":
         pipeline.add_stage(RCNNObjectDetectionStage())
