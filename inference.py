@@ -59,8 +59,8 @@ class SmogClassifier:
                 - class: "Clear" or "Smog"
                 - confidence: float [0-1]
                 - logit: raw model output
-                - probability_clear: float
-                - probability_smog: float
+                - probability_clear: float [0-1]
+                - probability_smog: float [0-1]
         """
         # Load image
         if image_path:
@@ -90,7 +90,4 @@ class SmogClassifier:
             "logit": float(logit),
             "probability_clear": float(1.0 - prob),
             "probability_smog": float(prob),
-            "precision": 0.94,
-            "recall": 0.91,
-            "f1_score": 0.92
         }

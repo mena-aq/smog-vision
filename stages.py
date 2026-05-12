@@ -977,18 +977,29 @@ class RCNNObjectDetectionStage(PipelineStage):
 
 class MaskGenerationStage(PipelineStage):
     """Generate segmentation masks with object outlines from detected regions."""
-    
-    def __init__(self, method: str = "contour"):
+
+    def __init__(self, method: str = "contour", canny_low: int = 50, canny_high: int = 150,
+                 min_contour_area: int = 20, dilate_iterations: int = 0, kernel_size: int = 3):
         """
         Args:
             method: "contour" (extract edges from detection region) or "filled" (filled rectangles)
+            canny_low: Lower threshold for Canny edge detection (higher = less fuzzy)
+            canny_high: Upper threshold for Canny edge detection (higher = less noise)
+            min_contour_area: Minimum contour area to draw (larger = ignore small noise)
+            dilate_iterations: Dilation iterations (0 = sharp, 1+ = thicker/fuzzier)
+            kernel_size: Morphological kernel size used for open/close and dilation
         """
         super().__init__("Mask Generation")
         self.method = method.lower()
-        
+        self.canny_low = int(canny_low)
+        self.canny_high = int(canny_high)
+        self.min_contour_area = int(min_contour_area)
+        self.dilate_iterations = int(dilate_iterations)
+        self.kernel_size = int(kernel_size)
+
         if self.method not in ("contour", "filled"):
             raise ValueError(f"Unknown mask method: {method}. Use 'contour' or 'filled'.")
-        
+
         # Color mapping for each class (RGB format)
         self.class_colors = {
             'person': (0, 255, 0),        # Green for people
@@ -1132,12 +1143,13 @@ class MaskGenerationStage(PipelineStage):
         gray = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)  # Close holes
         gray = cv2.morphologyEx(gray, cv2.MORPH_OPEN, kernel)   # Remove small noise
         
-        # Edge detection with adaptive thresholds
-        edges = cv2.Canny(gray, 30, 100)
-        
-        # Dilate to connect broken edges
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        edges = cv2.dilate(edges, kernel, iterations=1)
+        # Edge detection with configurable thresholds
+        edges = cv2.Canny(gray, self.canny_low, self.canny_high)
+
+        # Dilate to connect broken edges (configurable)
+        if self.dilate_iterations > 0:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.kernel_size, self.kernel_size))
+            edges = cv2.dilate(edges, kernel, iterations=self.dilate_iterations)
         
         # Find contours
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -1151,12 +1163,32 @@ class MaskGenerationStage(PipelineStage):
         for contour in contours:
             # Filter out very small contours (noise)
             area = cv2.contourArea(contour)
-            if area > 5:  # Minimum area threshold
+            if area > self.min_contour_area:  # Configurable area threshold
                 # Shift contour back to original image coordinates
                 contour_shifted = contour + np.array([x1, y1])
                 
                 # Draw filled contour on mask
                 cv2.drawContours(mask, [contour_shifted], 0, color_bgr, -1)
+
+    @staticmethod
+    def _to_numpy_uint8(image_input) -> np.ndarray:
+        """Convert path / PIL Image / ndarray → uint8 RGB."""
+        if isinstance(image_input, str):
+            return np.array(Image.open(image_input).convert("RGB"), dtype=np.uint8)
+        elif isinstance(image_input, Image.Image):
+            return np.array(image_input.convert("RGB"), dtype=np.uint8)
+        elif isinstance(image_input, np.ndarray):
+            if image_input.size == 0:
+                raise ValueError(f"Empty numpy array: shape={image_input.shape}")
+            if image_input.ndim == 3 and image_input.shape[2] in (3, 4):
+                return image_input[:, :, :3].astype(np.uint8)  # Take RGB channels only
+            elif image_input.ndim == 2:
+                # Grayscale, convert to RGB
+                return np.stack([image_input, image_input, image_input], axis=2).astype(np.uint8)
+            else:
+                raise ValueError(f"Unexpected array shape: {image_input.shape}")
+        else:
+            raise TypeError(f"Unsupported image type: {type(image_input)}")
     
     @staticmethod
     def _to_numpy_uint8(image_input) -> np.ndarray:
@@ -1179,12 +1211,6 @@ class MaskGenerationStage(PipelineStage):
             raise TypeError(f"Unsupported image type: {type(image_input)}")
 
 
-# Usage in create_default_pipeline:
-# pipeline.add_stage(MaskGenerationStage(method="contour"))  # For object outlines
-# OR
-# pipeline.add_stage(MaskGenerationStage(method="filled"))   # For filled boxes
-
-
 def create_default_pipeline(model_path: str, object_detection_model: str = "yolo", dehazing_method: str = "clahe"):
     """Create a pipeline with all stages."""
     
@@ -1204,6 +1230,13 @@ def create_default_pipeline(model_path: str, object_detection_model: str = "yolo
         pipeline.add_stage(HOGSVMObjectDetectionStage())
     
     # Add mask generation stage to create colored segmentation masks
-    pipeline.add_stage(MaskGenerationStage())
+    pipeline.add_stage(MaskGenerationStage(
+        method="contour",
+        canny_low=30,
+        canny_high=180,
+        min_contour_area=50,
+        dilate_iterations=1,
+        kernel_size=3,
+    ))
     
     return pipeline

@@ -633,7 +633,7 @@ class SmogVisionGUI(QMainWindow):
             "Stage 1", 
             "#EF4444", 
             "#FFF1F1", 
-            ["Predicted Class", "Accuracy", "Precision", "Recall", "F1-Score", "Processing Time"]
+            ["Predicted Class", "Confidence", "Probability Smog", "Probability Clear", "Processing Time"]
         )
         layout.addWidget(self.cnn_metrics)
 
@@ -926,10 +926,13 @@ class SmogVisionGUI(QMainWindow):
                 proc_time = classification.get("processing_time_ms", 0)
                 total_time += proc_time
                 
-                self.update_metric_row(self.cnn_metrics, "Accuracy", f"{classification.get('confidence', 0)*100:.1f}%")
-                self.update_metric_row(self.cnn_metrics, "Precision", f"{classification.get('precision', 0):.2f}")
-                self.update_metric_row(self.cnn_metrics, "Recall", f"{classification.get('recall', 0):.2f}")
-                self.update_metric_row(self.cnn_metrics, "F1-Score", f"{classification.get('f1_score', 0):.2f}")
+                confidence = classification.get('confidence', 0)
+                prob_smog = classification.get('probability_smog', 0)
+                prob_clear = classification.get('probability_clear', 0)
+                
+                self.update_metric_row(self.cnn_metrics, "Confidence", f"{confidence*100:.1f}%")
+                self.update_metric_row(self.cnn_metrics, "Probability Smog", f"{prob_smog*100:.1f}%")
+                self.update_metric_row(self.cnn_metrics, "Probability Clear", f"{prob_clear*100:.1f}%")
                 self.update_metric_row(self.cnn_metrics, "Processing Time", f"{proc_time}ms")
                 
                 # Predicted Class Logic
