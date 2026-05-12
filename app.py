@@ -10,12 +10,77 @@ from PIL import Image
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QMessageBox, QGroupBox,
-    QFrame, QScrollArea, QComboBox
+    QFrame, QScrollArea, QComboBox, QDialog
 )
 from PyQt6.QtGui import QPixmap, QImage, QColor
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 from stages import create_default_pipeline
+
+
+class ClickableLabel(QLabel):
+    clicked = pyqtSignal()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
+class ImageViewerDialog(QDialog):
+    def __init__(self, image_data, title="Image Viewer", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumSize(900, 650)
+
+        self.viewer_label = QLabel()
+        self.viewer_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.viewer_label.setScaledContents(False)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setWidget(self.viewer_label)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.scroll_area)
+
+        self._original_pixmap = self._to_pixmap(image_data)
+        self._update_pixmap()
+
+    def _to_pixmap(self, image_data):
+        if isinstance(image_data, str):
+            return QPixmap(image_data)
+        if isinstance(image_data, np.ndarray):
+            if image_data.ndim == 3 and image_data.shape[2] == 3:
+                image_data = cv2.cvtColor(image_data, cv2.COLOR_BGR2RGB)
+            h, w = image_data.shape[:2]
+            channels = image_data.shape[2] if image_data.ndim == 3 else 1
+            bytes_per_line = channels * w
+            q_img = QImage(image_data.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            return QPixmap.fromImage(q_img)
+        if isinstance(image_data, Image.Image):
+            image = image_data.convert("RGBA")
+            data = image.tobytes("raw", "RGBA")
+            q_img = QImage(data, image.width, image.height, QImage.Format.Format_RGBA8888)
+            return QPixmap.fromImage(q_img)
+        return QPixmap()
+
+    def _update_pixmap(self):
+        if self._original_pixmap.isNull():
+            self.viewer_label.setText("No image available")
+            return
+
+        viewport_size = self.scroll_area.viewport().size()
+        scaled_pixmap = self._original_pixmap.scaled(
+            viewport_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.viewer_label.setPixmap(scaled_pixmap)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_pixmap()
 
 
 class VideoWorker(QThread):
@@ -102,6 +167,7 @@ class SmogVisionGUI(QMainWindow):
         self.video_worker = None
         self.inference_worker = None
         self.detector_dropdown = None
+        self.current_final_image = None
         self.init_ui()
 
     def init_ui(self):
@@ -191,6 +257,9 @@ class SmogVisionGUI(QMainWindow):
         comparison_layout = QHBoxLayout()
         self.final_original_view = self.create_image_view("Original")
         self.final_result_view = self.create_image_view("Final Result")
+        final_result_label = self.final_result_view.property("image_label")
+        final_result_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        final_result_label.clicked.connect(self.open_final_result_viewer)
         
         comparison_layout.addWidget(self.final_original_view)
         comparison_layout.addWidget(self.create_arrow(large=True))
@@ -208,11 +277,11 @@ class SmogVisionGUI(QMainWindow):
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(5, 5, 5, 5)
         
-        label = QLabel()
+        label = ClickableLabel()
         label.setObjectName("imageView")
-        # No fixed size here - let it expand
-        label.setMinimumSize(200, 150) 
+        label.setFixedSize(320, 180)
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setScaledContents(False)
         layout.addWidget(label)
         
         title_label = QLabel(title)
@@ -222,6 +291,13 @@ class SmogVisionGUI(QMainWindow):
         
         widget.setProperty("image_label", label)
         return widget
+
+    def open_final_result_viewer(self):
+        if self.current_final_image is None:
+            return
+
+        viewer = ImageViewerDialog(self.current_final_image, "Final Result", self)
+        viewer.exec()
 
     def create_right_panel(self):
         widget = QWidget()
@@ -247,18 +323,18 @@ class SmogVisionGUI(QMainWindow):
                                                ["Transmission Map", "Dark Channel", "Airlight RGB", "Processing Time"])
         layout.addWidget(self.dcp_metrics)
 
-        self.hog_svm_metrics = self.create_metric_box("HOG + SVM", "Stage 3", "#10B981", "#F0FDF4",
-                                               ["People Detected", "Cars Detected", "Total Detections", "Processing Time"])
+        self.hog_svm_metrics = self.create_comparison_metric_box("HOG + SVM", "Stage 3", "#10B981", "#F0FDF4",
+                                               ["People Detected", "Cars Detected", "Total Detections"])
         layout.addWidget(self.hog_svm_metrics)
 
         # Placeholders for other detectors (hidden until used)
-        self.yolo_metrics = self.create_metric_box("YOLO Detector", "Stage 3", "#10B981", "#F0FDF4",
-                              ["People Detected", "Cars Detected", "Total Detections", "Processing Time"])
+        self.yolo_metrics = self.create_comparison_metric_box("YOLO Detector", "Stage 3", "#10B981", "#F0FDF4",
+                              ["People Detected", "Cars Detected", "Total Detections"])
         self.yolo_metrics.setVisible(False)
         layout.addWidget(self.yolo_metrics)
 
-        self.rcnn_metrics = self.create_metric_box("RCNN Detector", "Stage 3", "#10B981", "#F0FDF4",
-                               ["People Detected", "Cars Detected", "Total Detections", "Processing Time"])
+        self.rcnn_metrics = self.create_comparison_metric_box("RCNN Detector", "Stage 3", "#10B981", "#F0FDF4",
+                               ["People Detected", "Cars Detected", "Total Detections"])
         self.rcnn_metrics.setVisible(False)
         layout.addWidget(self.rcnn_metrics)
 
@@ -330,6 +406,83 @@ class SmogVisionGUI(QMainWindow):
         layout.addWidget(v)
         widget.setProperty("value_label", v)
         return widget
+    
+    def create_comparison_metric_box(self, title, stage, accent_color, bg_color, labels):
+        """Create a metric box with 2-column comparison (Dehazed vs Original)."""
+        box = QGroupBox()
+        box.setStyleSheet(f"""
+            QGroupBox {{ 
+                background-color: {bg_color}; 
+                border-radius: 12px; 
+                border: none; 
+                margin-top: 10px;
+            }}
+        """)
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(15, 15, 15, 15)
+
+        # Header
+        header = QHBoxLayout()
+        dot = QLabel("●")
+        dot.setStyleSheet(f"color: {accent_color}; font-size: 18px; border: none;")
+        t_label = QLabel(title)
+        t_label.setObjectName("h3")
+        header.addWidget(t_label)
+        header.addWidget(dot)
+        header.addStretch()
+        
+        s_label = QLabel(stage)
+        s_label.setObjectName("stageLabel")
+        header.addWidget(s_label)
+        layout.addLayout(header)
+
+        # Column headers
+        col_header = QHBoxLayout()
+        col_header.addWidget(QLabel(""), 1)  # Empty space for label column
+        dehazed_header = QLabel("Dehazed")
+        dehazed_header.setObjectName("h3")
+        dehazed_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        col_header.addWidget(dehazed_header, 1)
+        original_header = QLabel("Original")
+        original_header.setObjectName("h3")
+        original_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        col_header.addWidget(original_header, 1)
+        layout.addLayout(col_header)
+
+        # Metric rows with 2 columns
+        metric_widgets = {}
+        for text in labels:
+            row_layout = QHBoxLayout()
+            
+            # Label
+            l = QLabel(text)
+            l.setStyleSheet("color: #6B7280; font-size: 13px;")
+            row_layout.addWidget(l, 1)
+            
+            # Dehazed value
+            v_dehazed = QLabel("N/A")
+            v_dehazed.setStyleSheet("color: #111827; font-weight: 600; font-size: 13px;")
+            v_dehazed.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            row_layout.addWidget(v_dehazed, 1)
+            
+            # Original value
+            v_original = QLabel("N/A")
+            v_original.setStyleSheet("color: #111827; font-weight: 600; font-size: 13px;")
+            v_original.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            row_layout.addWidget(v_original, 1)
+            
+            row_widget = QWidget()
+            row_widget.setLayout(row_layout)
+            layout.addWidget(row_widget)
+            
+            metric_widgets[text] = {
+                "dehazed": v_dehazed,
+                "original": v_original
+            }
+        
+        box.setProperty("metric_widgets", metric_widgets)
+        box.setProperty("title_label", t_label)
+        return box
     
     def create_divider(self):
         """Helper to create a horizontal divider."""
@@ -408,7 +561,10 @@ class SmogVisionGUI(QMainWindow):
         self.display_image(result["final_data"].get("dehazed_image"), self.dehazed_view.property("image_label"))
         self.display_image(result["final_data"].get("segmented_image"), self.segmented_view.property("image_label"))
         self.display_image(result["final_data"].get("image_input"), self.final_original_view.property("image_label"))
-        self.display_image(result["final_data"].get("segmented_image"), self.final_result_view.property("image_label"))
+        # Bottom row shows detection on ORIGINAL image (not dehazed)
+        self.display_image(result["final_data"].get("segmented_image_original"), self.final_result_view.property("image_label"))
+        # Store the original-based result for viewer
+        self.current_final_image = result["final_data"].get("segmented_image_original") or result["final_data"].get("image_input")
         
         # Update metrics
         for stage_result in result["stages"]:
@@ -464,10 +620,15 @@ class SmogVisionGUI(QMainWindow):
                     self.yolo_metrics.setVisible(False)
                     self.rcnn_metrics.setVisible(False)
                     
-                    self.update_metric_row(self.hog_svm_metrics, "People Detected", str(hog.get("people_count", 0)))
-                    self.update_metric_row(self.hog_svm_metrics, "Cars Detected",   str(hog.get("car_count", 0)))
-                    self.update_metric_row(self.hog_svm_metrics, "Total Detections", str(hog.get("total_detections", 0)))
-                    self.update_metric_row(self.hog_svm_metrics, "Processing Time",  f"{proc_time}ms")
+                    self.update_comparison_metric_row(self.hog_svm_metrics, "People Detected", 
+                                                     str(hog.get("people_count_dehazed", 0)),
+                                                     str(hog.get("people_count_original", 0)))
+                    self.update_comparison_metric_row(self.hog_svm_metrics, "Cars Detected",
+                                                     str(hog.get("car_count_dehazed", 0)),
+                                                     str(hog.get("car_count_original", 0)))
+                    self.update_comparison_metric_row(self.hog_svm_metrics, "Total Detections",
+                                                     str(hog.get("total_detections_dehazed", 0)),
+                                                     str(hog.get("total_detections_original", 0)))
 
             elif stage_name == "YOLO Object Detection":
                 yolo = data.get("yolo_metrics", {})
@@ -481,10 +642,15 @@ class SmogVisionGUI(QMainWindow):
                     self.hog_svm_metrics.setVisible(False)
                     self.rcnn_metrics.setVisible(False)
 
-                    self.update_metric_row(self.yolo_metrics, "People Detected", str(yolo.get("people_count", 0)))
-                    self.update_metric_row(self.yolo_metrics, "Cars Detected", str(yolo.get("car_count", 0)))
-                    self.update_metric_row(self.yolo_metrics, "Total Detections", str(yolo.get("total_detections", 0)))
-                    self.update_metric_row(self.yolo_metrics, "Processing Time", f"{proc_time:.1f}ms")
+                    self.update_comparison_metric_row(self.yolo_metrics, "People Detected",
+                                                     str(yolo.get("people_count_dehazed", 0)),
+                                                     str(yolo.get("people_count_original", 0)))
+                    self.update_comparison_metric_row(self.yolo_metrics, "Cars Detected",
+                                                     str(yolo.get("car_count_dehazed", 0)),
+                                                     str(yolo.get("car_count_original", 0)))
+                    self.update_comparison_metric_row(self.yolo_metrics, "Total Detections",
+                                                     str(yolo.get("total_detections_dehazed", 0)),
+                                                     str(yolo.get("total_detections_original", 0)))
                 else:
                     # Hide YOLO box if no metrics
                     self.yolo_metrics.setVisible(False)
@@ -501,10 +667,15 @@ class SmogVisionGUI(QMainWindow):
                     self.hog_svm_metrics.setVisible(False)
                     self.yolo_metrics.setVisible(False)
 
-                    self.update_metric_row(self.rcnn_metrics, "People Detected", str(rcnn.get("people_count", 0)))
-                    self.update_metric_row(self.rcnn_metrics, "Cars Detected",   str(rcnn.get("car_count", 0)))
-                    self.update_metric_row(self.rcnn_metrics, "Total Detections", str(rcnn.get("total_detections", 0)))
-                    self.update_metric_row(self.rcnn_metrics, "Processing Time",  f"{proc_time:.1f}ms")
+                    self.update_comparison_metric_row(self.rcnn_metrics, "People Detected",
+                                                     str(rcnn.get("people_count_dehazed", 0)),
+                                                     str(rcnn.get("people_count_original", 0)))
+                    self.update_comparison_metric_row(self.rcnn_metrics, "Cars Detected",
+                                                     str(rcnn.get("car_count_dehazed", 0)),
+                                                     str(rcnn.get("car_count_original", 0)))
+                    self.update_comparison_metric_row(self.rcnn_metrics, "Total Detections",
+                                                     str(rcnn.get("total_detections_dehazed", 0)),
+                                                     str(rcnn.get("total_detections_original", 0)))
                 else:
                     self.rcnn_metrics.setVisible(False)
         
@@ -519,6 +690,13 @@ class SmogVisionGUI(QMainWindow):
         metric_widgets = box.property("metric_widgets")
         if label in metric_widgets:
             metric_widgets[label].property("value_label").setText(value)
+    
+    def update_comparison_metric_row(self, box, label, dehazed_value, original_value):
+        """Helper to update a comparison metric row with both dehazed and original values."""
+        metric_widgets = box.property("metric_widgets")
+        if label in metric_widgets:
+            metric_widgets[label]["dehazed"].setText(dehazed_value)
+            metric_widgets[label]["original"].setText(original_value)
     
     def on_processing_finished(self):
         """Reset button state after processing."""
@@ -550,9 +728,17 @@ class SmogVisionGUI(QMainWindow):
         else:
             return
 
-        # Set the high-res pixmap and let the label scale it visually
-        label_widget.setPixmap(pixmap)
-        label_widget.setScaledContents(True) # This allows the image to expand with the window
+        target_size = label_widget.size()
+        if not target_size.isValid() or target_size.width() <= 0 or target_size.height() <= 0:
+            target_size = label_widget.minimumSize()
+
+        scaled_pixmap = pixmap.scaled(
+            target_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        label_widget.setPixmap(scaled_pixmap)
+        label_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
     
     def closeEvent(self, event):
         """Ensure worker threads are stopped on exit."""
