@@ -424,18 +424,52 @@ class SmogVisionGUI(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # Left panel
-        left_panel = self.create_left_panel()
-        main_layout.addWidget(left_panel, 7)
+        # Left panel with horizontal scroll
+        left_panel_widget = self.create_left_panel()
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setWidget(left_panel_widget)
+        left_scroll.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                background-color: white;
+            }
+            QScrollBar:horizontal {
+                background-color: #f3f4f6;
+                height: 10px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:horizontal {
+                background-color: #d1d5db;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background-color: #9ca3af;
+            }
+            QScrollBar:vertical {
+                background-color: #f3f4f6;
+                width: 10px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #d1d5db;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #9ca3af;
+            }
+        """)
+        main_layout.addWidget(left_scroll, 1)  # Takes remaining space
 
         # Right panel
         right_panel = self.create_right_panel()
-        main_layout.addWidget(right_panel, 3)
+        main_layout.addWidget(right_panel, 0)  # Fixed size
 
         self.apply_stylesheet()
     
     def create_left_panel(self):
         widget = QWidget()
+        widget.setStyleSheet("background-color: white;")
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(40, 30, 40, 30)
         layout.setSpacing(12)
@@ -612,15 +646,33 @@ class SmogVisionGUI(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to open mask viewer:\n{str(e)}")
 
     def create_right_panel(self):
-        # Main container with scroll area
+        # Create scroll area for metrics
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setStyleSheet("QScrollArea { border: none; background-color: #FFFFFF; }")
+        scroll_area.setMinimumWidth(300)
+        scroll_area.setMaximumWidth(450)  # Set reasonable max width for metrics panel
+        scroll_area.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                background-color: transparent;
+            }
+            QScrollBar:vertical {
+                background-color: #f3f4f6;
+                width: 10px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #d1d5db;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #9ca3af;
+            }
+        """)
         
-        # Inner widget for scroll content
-        inner_widget = QWidget()
-        inner_widget.setObjectName("metricsPanel")
-        layout = QVBoxLayout(inner_widget)
+        widget = QWidget()
+        widget.setObjectName("metricsPanel")
+        layout = QVBoxLayout(widget)
         layout.setContentsMargins(25, 30, 25, 30)
         
         title = QLabel("Model Metrics")
@@ -647,17 +699,17 @@ class SmogVisionGUI(QMainWindow):
         layout.addWidget(self.clahe_metrics)
 
         self.hog_svm_metrics = self.create_comparison_metric_box("HOG + SVM", "Stage 3", "#10B981", "#F0FDF4",
-                                               ["People Detected", "Cars Detected", "Total Detections"])
+                                               ["People Detected", "Vehicles Detected", "Total Detections"])
         layout.addWidget(self.hog_svm_metrics)
 
         # Placeholders for other detectors (hidden until used)
         self.yolo_metrics = self.create_comparison_metric_box("YOLO Detector", "Stage 3", "#10B981", "#F0FDF4",
-                              ["People Detected", "Cars Detected", "Total Detections"])
+                              ["People Detected", "Vehicles Detected", "Total Detections"])
         self.yolo_metrics.setVisible(False)
         layout.addWidget(self.yolo_metrics)
 
         self.rcnn_metrics = self.create_comparison_metric_box("RCNN Detector", "Stage 3", "#10B981", "#F0FDF4",
-                               ["People Detected", "Cars Detected", "Total Detections"])
+                               ["People Detected", "Vehicles Detected", "Total Detections"])
         self.rcnn_metrics.setVisible(False)
         layout.addWidget(self.rcnn_metrics)
 
@@ -668,7 +720,8 @@ class SmogVisionGUI(QMainWindow):
 
         self.update_detection_metrics_title(self.detector_dropdown.currentText() if self.detector_dropdown else "Select Detection Method")
         
-        scroll_area.setWidget(inner_widget)
+        # Set widget in scroll area and return scroll area
+        scroll_area.setWidget(widget)
         return scroll_area
     
     def create_arrow(self, large=False):
@@ -988,7 +1041,7 @@ class SmogVisionGUI(QMainWindow):
                     self.update_comparison_metric_row(self.hog_svm_metrics, "People Detected", 
                                                      str(hog.get("people_count_dehazed", 0)),
                                                      str(hog.get("people_count_original", 0)))
-                    self.update_comparison_metric_row(self.hog_svm_metrics, "Cars Detected",
+                    self.update_comparison_metric_row(self.hog_svm_metrics, "Vehicles Detected",
                                                      str(hog.get("car_count_dehazed", 0)),
                                                      str(hog.get("car_count_original", 0)))
                     self.update_comparison_metric_row(self.hog_svm_metrics, "Total Detections",
@@ -1010,7 +1063,7 @@ class SmogVisionGUI(QMainWindow):
                     self.update_comparison_metric_row(self.yolo_metrics, "People Detected",
                                                      str(yolo.get("people_count_dehazed", 0)),
                                                      str(yolo.get("people_count_original", 0)))
-                    self.update_comparison_metric_row(self.yolo_metrics, "Cars Detected",
+                    self.update_comparison_metric_row(self.yolo_metrics, "Vehicles Detected",
                                                      str(yolo.get("car_count_dehazed", 0)),
                                                      str(yolo.get("car_count_original", 0)))
                     self.update_comparison_metric_row(self.yolo_metrics, "Total Detections",
@@ -1035,7 +1088,7 @@ class SmogVisionGUI(QMainWindow):
                     self.update_comparison_metric_row(self.rcnn_metrics, "People Detected",
                                                      str(rcnn.get("people_count_dehazed", 0)),
                                                      str(rcnn.get("people_count_original", 0)))
-                    self.update_comparison_metric_row(self.rcnn_metrics, "Cars Detected",
+                    self.update_comparison_metric_row(self.rcnn_metrics, "Vehicles Detected",
                                                      str(rcnn.get("car_count_dehazed", 0)),
                                                      str(rcnn.get("car_count_original", 0)))
                     self.update_comparison_metric_row(self.rcnn_metrics, "Total Detections",

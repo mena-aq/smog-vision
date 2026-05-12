@@ -7,6 +7,7 @@ import numpy as np
 from inference import SmogClassifier
 from pipeline import PipelineStage, PipelineResult
 from pipeline import SmogClassificationPipeline
+from ultralytics import YOLO
 
 
 class SmogClassificationStage(PipelineStage):
@@ -69,7 +70,7 @@ class SmogClassificationStage(PipelineStage):
 class DehazingStage(PipelineStage):
     """Dehazing stage supporting DCP and CLAHE methods."""
     
-    def __init__(self, method: str = "dcp", patch_size: int = 15, omega: float = 0.95, t_min: float = 0.1, clahe_clip: float = 3.5, clahe_tile: int = 8, color_boost: float = 1.3):
+    def __init__(self, method: str = "dcp", patch_size: int = 15, omega: float = 0.75, t_min: float = 0.2, clahe_clip: float = 3.5, clahe_tile: int = 8, color_boost: float = 1.3):
         """
         Args:
             method:     Dehazing algorithm: "dcp" (Dark Channel Prior) or "clahe" (CLAHE-based)
@@ -104,11 +105,20 @@ class DehazingStage(PipelineStage):
             start = time.time()
 
             if self.method == "dcp":
+                # Compute intermediate maps so we can report them in metrics
+                dark = self._dark_channel(img_np)
+                A = self._atmospheric_light(img_np, dark)
+                t_raw = self._transmission(img_np, A)
+
                 dehazed_np = self._dehaze_dcp(img_np)
                 metrics_key = "dcp_metrics"
                 metrics = {
                     "method": "DCP (Dark Channel Prior)",
-                    "transmission_map": float(np.mean(self._transmission(img_np, self._atmospheric_light(img_np, self._dark_channel(img_np))))),
+                    # Report mean transmission and mean dark-channel for quick diagnostics
+                    "transmission_map": float(np.mean(t_raw)),
+                    "dark_channel": float(np.mean(dark)),
+                    # Airlight returned in [0,1] per channel — convert to 0-255 ints for display
+                    "airlight_rgb": (int(A[0] * 255), int(A[1] * 255), int(A[2] * 255)),
                     "processing_time_ms": round((time.time() - start) * 1000, 1),
                 }
             else:  # clahe
@@ -222,8 +232,8 @@ class DehazingStage(PipelineStage):
         self,
         guide: np.ndarray,
         src: np.ndarray,
-        radius: int = 15,
-        eps: float = 1e-2,
+        radius: int = 20,
+        eps: float = 1e-3,
     ) -> np.ndarray:
         """
         Soft-matting / edge-preserving refinement of the transmission map
@@ -273,7 +283,9 @@ class DehazingStage(PipelineStage):
             J(x) = (I(x) - A) / max(t(x), t_min) + A
         """
         t3 = t[:, :, np.newaxis]           # (H, W, 1) for broadcasting
-        J = (img - A) / np.maximum(t3, self.t_min) + A  # ← Use max instead of clip
+        J  = (img - A) / t3 + A
+        gamma = 0.9
+        J = np.power(J, gamma)
         return J.clip(0.0, 1.0)
 
     @staticmethod
@@ -504,33 +516,25 @@ class HOGSVMObjectDetectionStage(PipelineStage):
         else:
             raise TypeError(f"Unsupported image type: {type(image_input)}")
 
-
-import os
-import time
-import numpy as np
-from PIL import Image
-import cv2
-from ultralytics import YOLO
-from pipeline import PipelineStage, PipelineResult
-
-
 class YOLOObjectDetectionStage(PipelineStage):
     """YOLO-based object detection for vehicles and pedestrians."""
     
-    def __init__(self, model_path: str = "yolo26n.pt", confidence_threshold: float = 0.5, device: str = None):
+    def __init__(self, model_path: str = "yolov8m.pt", confidence_threshold: float = 0.25, iou_threshold: float = 0.5, device: str = None):
         """
         Initialize YOLO detector.
         
         Args:
-            model_path: YOLO model to use (default: "yolo26n.pt" for best CPU performance)
-                       Options: "yolo26n.pt", "yolov8n.pt", "yolov11n.pt", or path to custom model
+            model_path: YOLO model to use (default: "yolov8m.pt")
+                       Options: "yolov8m.pt", "yolov8n.pt", "yolov11n.pt", or path to custom model
             confidence_threshold: Minimum confidence for detections (0-1)
+            iou_threshold: Intersection over Union threshold for NMS (0-1)
             device: 'cuda', 'cpu', or None (auto-detect)
         """
         super().__init__("YOLO Object Detection")
         
         self.model_path = model_path
         self.confidence_threshold = confidence_threshold
+        self.iou_threshold = iou_threshold
         self.device = device or ("cuda" if self._check_cuda() else "cpu")
         
         # Load YOLO model
@@ -561,16 +565,16 @@ class YOLOObjectDetectionStage(PipelineStage):
             8: 'boat',
         }
         
-        # Use the same vehicle color as HOG/haar stage for consistency.
-        vehicle_color_bgr = (0, 165, 255)
+        self.person_color = (0, 255, 0)      # Green for people
+        self.vehicle_color = (0, 165, 255)   # Orange for vehicles
         self.colors = {
-            'person': (0, 255, 0),        # Green (people)
-            'car': vehicle_color_bgr,     # Vehicle (orange)
-            'truck': vehicle_color_bgr,   # Vehicle (orange)
-            'bus': vehicle_color_bgr,     # Vehicle (orange)
-            'motorcycle': vehicle_color_bgr, # Treat as vehicle (orange)
-            'bicycle': vehicle_color_bgr, # Treat as vehicle (orange)
-            'default': vehicle_color_bgr  # Default to vehicle color
+            'person': self.person_color,      # Green (people)
+            'car': self.vehicle_color,        # Vehicle (orange)
+            'truck': self.vehicle_color,      # Vehicle (orange)
+            'bus': self.vehicle_color,        # Vehicle (orange)
+            'motorcycle': self.vehicle_color, # Treat as vehicle (orange)
+            'bicycle': self.vehicle_color,    # Treat as vehicle (orange)
+            'default': self.vehicle_color     # Default to vehicle color
         }
 
     def _check_cuda(self) -> bool:
@@ -680,7 +684,7 @@ class YOLOObjectDetectionStage(PipelineStage):
         results = self.model(
             img_array, 
             conf=self.confidence_threshold,
-            iou=0.45,
+            iou=self.iou_threshold,
             half=True if self.device == "cuda" else False,
             verbose=False
         )
@@ -739,9 +743,11 @@ class YOLOObjectDetectionStage(PipelineStage):
                             draw_x2 = int(x2 * scale)
                             draw_y2 = int(y2 * scale)
                         
-                        color = self.colors.get(class_name, self.colors['default'])
+                        color_rgb = self.colors.get(class_name, self.colors['default'])
+                        # Convert RGB to BGR for OpenCV
+                        color_bgr = (color_rgb[2], color_rgb[1], color_rgb[0])
                         
-                        cv2.rectangle(draw_img, (draw_x1, draw_y1), (draw_x2, draw_y2), color, 2)
+                        cv2.rectangle(draw_img, (draw_x1, draw_y1), (draw_x2, draw_y2), color_bgr, 2)
                         
                         label = f"{class_name}: {confidence:.2f}"
                         label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
@@ -750,7 +756,7 @@ class YOLOObjectDetectionStage(PipelineStage):
                         cv2.rectangle(draw_img, 
                                     (draw_x1, y_label - label_size[1] - 5),
                                     (draw_x1 + label_size[0] + 5, y_label),
-                                    color, -1)
+                                    color_bgr, -1)
                         
                         cv2.putText(draw_img, label, 
                                   (draw_x1 + 2, y_label - 5),
@@ -1221,8 +1227,9 @@ def create_default_pipeline(model_path: str, object_detection_model: str = "yolo
     detection_model = (object_detection_model or "hogsvm").strip().lower()
     if detection_model == "yolo":
         pipeline.add_stage(YOLOObjectDetectionStage(
-            model_path="yolo26n.pt",  # Best for CPU
-            confidence_threshold=0.4   # Slightly lower for smoggy images
+            model_path="yolov8m.pt",
+            confidence_threshold=0.25,  # Slightly lower for smoggy images
+            iou_threshold=0.5,
         ))
     elif detection_model == "rcnn":
         pipeline.add_stage(RCNNObjectDetectionStage())
