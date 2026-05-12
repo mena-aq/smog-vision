@@ -6,6 +6,7 @@ import time
 import numpy as np
 from inference import SmogClassifier
 from pipeline import PipelineStage, PipelineResult
+from pipeline import SmogClassificationPipeline
 
 
 class SmogClassificationStage(PipelineStage):
@@ -454,52 +455,263 @@ class HOGSVMObjectDetectionStage(PipelineStage):
             raise TypeError(f"Unsupported image type: {type(image_input)}")
 
 
-class YOLOObjectDetectionStage(PipelineStage):
-    """Placeholder for YOLO-based object detection."""
+import os
+import time
+import numpy as np
+from PIL import Image
+import cv2
+from ultralytics import YOLO
+from pipeline import PipelineStage, PipelineResult
 
-    def __init__(self, model_path: str = None):
+
+class YOLOObjectDetectionStage(PipelineStage):
+    """YOLO-based object detection for vehicles and pedestrians."""
+    
+    def __init__(self, model_path: str = "yolo26n.pt", confidence_threshold: float = 0.5, device: str = None):
+        """
+        Initialize YOLO detector.
+        
+        Args:
+            model_path: YOLO model to use (default: "yolo26n.pt" for best CPU performance)
+                       Options: "yolo26n.pt", "yolov8n.pt", "yolov11n.pt", or path to custom model
+            confidence_threshold: Minimum confidence for detections (0-1)
+            device: 'cuda', 'cpu', or None (auto-detect)
+        """
         super().__init__("YOLO Object Detection")
+        
         self.model_path = model_path
+        self.confidence_threshold = confidence_threshold
+        self.device = device or ("cuda" if self._check_cuda() else "cpu")
+        
+        # Load YOLO model
+        print(f"Loading YOLO model: {model_path}")
+        try:
+            self.model = YOLO(model_path)
+            # Move to appropriate device
+            if self.device == "cuda":
+                self.model.to('cuda')
+            print(f"YOLO model loaded successfully on {self.device}")
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            print("Falling back to yolov8n.pt...")
+            self.model = YOLO("yolov8n.pt")
+            if self.device == "cuda":
+                self.model.to('cuda')
+        
+        # Classes we care about for smog detection
+        self.target_classes = {
+            0: 'person',
+            1: 'bicycle', 
+            2: 'car',
+            3: 'motorcycle',
+            4: 'airplane',
+            5: 'bus',
+            6: 'train',
+            7: 'truck',
+            8: 'boat',
+        }
+        
+        # Use the same vehicle color as HOG/haar stage for consistency.
+        vehicle_color_bgr = (0, 165, 255)
+        self.colors = {
+            'person': (0, 255, 0),        # Green (people)
+            'car': vehicle_color_bgr,     # Vehicle (orange)
+            'truck': vehicle_color_bgr,   # Vehicle (orange)
+            'bus': vehicle_color_bgr,     # Vehicle (orange)
+            'motorcycle': vehicle_color_bgr, # Treat as vehicle (orange)
+            'bicycle': vehicle_color_bgr, # Treat as vehicle (orange)
+            'default': vehicle_color_bgr  # Default to vehicle color
+        }
+
+    def _check_cuda(self) -> bool:
+        """Check if CUDA is available."""
+        try:
+            import torch
+            return torch.cuda.is_available()
+        except:
+            return False
 
     def process(self, input_data: dict) -> PipelineResult:
         """
-        Placeholder YOLO stage.
-
+        Detect objects using YOLO.
+        
         Input:  {"dehazed_image": <PIL Image>, ...}
         Output: {"segmented_image": <PIL Image>, "detections": [...], ...}
         """
         try:
-            start = time.time()
-
+            start_time = time.time()
+            
+            # Get the dehazed image (prefer DCP output)
             source = input_data.get("dehazed_image", input_data.get("image_input"))
-            elapsed_ms = round((time.time() - start) * 1000, 1)
-
+            
+            if source is None:
+                raise ValueError("No image source available")
+            
+            # Convert to numpy array if needed
+            if isinstance(source, Image.Image):
+                img_array = np.array(source)
+            elif isinstance(source, np.ndarray):
+                img_array = source
+            else:
+                # Assume it's a path
+                img_array = np.array(Image.open(source).convert("RGB"))
+            
+            # Ensure RGB (YOLO expects RGB)
+            if len(img_array.shape) == 2:
+                img_array = cv2.cvtColor(img_array, cv2.COLOR_GRAY2RGB)
+            elif img_array.shape[2] == 4:
+                img_array = cv2.cvtColor(img_array, cv2.COLOR_RGBA2RGB)
+            
+            # Resize if too large for faster processing
+            original_h, original_w = img_array.shape[:2]
+            max_size = 1024
+            scale = 1.0
+            
+            if original_w > max_size:
+                scale = max_size / original_w
+                new_w = max_size
+                new_h = int(original_h * scale)
+                img_array = cv2.resize(img_array, (new_w, new_h))
+                print(f"Resized from {original_w}x{original_h} to {new_w}x{new_h}")
+            
+            # Run YOLO inference with optimization flags
+            results = self.model(
+                img_array, 
+                conf=self.confidence_threshold,
+                iou=0.45,           # IoU threshold for NMS
+                half=True if self.device == "cuda" else False,  # Half precision for CUDA
+                verbose=False       # Suppress verbose output
+            )
+            
+            # Process detections
+            detections = []
+            person_count = 0
+            vehicle_count = 0
+            
+            # Create annotated image (start with original)
+            annotated_img = img_array.copy()
+            
+            for result in results:
+                boxes = result.boxes
+                if boxes is not None:
+                    for box in boxes:
+                        # Get box coordinates (xyxy format)
+                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                        
+                        # Get class and confidence
+                        class_id = int(box.cls[0].cpu().numpy())
+                        confidence = float(box.conf[0].cpu().numpy())
+                        
+                        # Scale back coordinates if image was resized
+                        if scale != 1.0:
+                            x1 = int(x1 / scale)
+                            y1 = int(y1 / scale)
+                            x2 = int(x2 / scale)
+                            y2 = int(y2 / scale)
+                        
+                        # Only track our target classes
+                        if class_id in self.target_classes:
+                            class_name = self.target_classes[class_id]
+                            
+                            # Count vehicles vs people
+                            if class_name == 'person':
+                                person_count += 1
+                            elif class_name in ['car', 'truck', 'bus', 'motorcycle', 'bicycle', 'train']:
+                                vehicle_count += 1
+                            
+                            # Store detection (with scaled coordinates)
+                            detections.append({
+                                "type": class_name,
+                                "bbox": [x1, y1, x2 - x1, y2 - y1],  # [x, y, w, h]
+                                "confidence": confidence
+                            })
+                            
+                            # Draw bounding box on appropriately sized image
+                            # Note: We're drawing on the processed img_array (could be resized)
+                            # For final output, we'll draw on original
+                            draw_img = annotated_img
+                            draw_x1, draw_y1, draw_x2, draw_y2 = x1, y1, x2, y2
+                            
+                            # If we're using the resized image for drawing
+                            if scale != 1.0:
+                                draw_x1 = int(x1 * scale)
+                                draw_y1 = int(y1 * scale)
+                                draw_x2 = int(x2 * scale)
+                                draw_y2 = int(y2 * scale)
+                            
+                            # Get color for this class
+                            color = self.colors.get(class_name, self.colors['default'])
+                            
+                            # Draw rectangle
+                            cv2.rectangle(draw_img, (draw_x1, draw_y1), (draw_x2, draw_y2), color, 2)
+                            
+                            # Draw label with confidence
+                            label = f"{class_name}: {confidence:.2f}"
+                            label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                            y_label = max(draw_y1 - 5, label_size[1] + 5)
+                            
+                            # Draw label background
+                            cv2.rectangle(draw_img, 
+                                        (draw_x1, y_label - label_size[1] - 5),
+                                        (draw_x1 + label_size[0] + 5, y_label),
+                                        color, -1)
+                            
+                            # Draw label text
+                            cv2.putText(draw_img, label, 
+                                      (draw_x1 + 2, y_label - 5),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            
+            # If we resized, convert back to original size
+            if scale != 1.0:
+                annotated_img = cv2.resize(annotated_img, (original_w, original_h))
+            
+            processing_time_ms = (time.time() - start_time) * 1000
+            
+            # Convert back to PIL Image
+            # Note: annotated_img is RGB, convert to RGB for PIL
+            if len(annotated_img.shape) == 3 and annotated_img.shape[2] == 3:
+                segmented_pil = Image.fromarray(annotated_img)
+            else:
+                segmented_pil = Image.fromarray(cv2.cvtColor(annotated_img, cv2.COLOR_BGR2RGB))
+            
+            # Prepare metrics
             yolo_metrics = {
                 "model_path": self.model_path,
-                "people_count": 0,
-                "car_count": 0,
-                "total_detections": 0,
-                "processing_time_ms": elapsed_ms,
+                "people_count": person_count,
+                "car_count": vehicle_count,
+                "total_detections": len(detections),
+                "processing_time_ms": processing_time_ms,
+                "confidence_threshold": self.confidence_threshold,
+                "detections": detections
             }
-
+            
+            # Print debug info
+            if len(detections) > 0:
+                print(f"YOLO: {person_count} people, {vehicle_count} vehicles in {processing_time_ms:.1f}ms")
+            else:
+                print(f"YOLO: No detections in {processing_time_ms:.1f}ms (confidence threshold: {self.confidence_threshold})")
+            
             return PipelineResult(
                 stage_name=self.name,
                 success=True,
                 data={
                     **input_data,
-                    "segmented_image": source,
-                    "detections": [],
+                    "segmented_image": segmented_pil,
+                    "detections": detections,
                     "yolo_metrics": yolo_metrics,
                 },
             )
+            
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return PipelineResult(
                 stage_name=self.name,
                 success=False,
                 data={},
-                error=str(e),
+                error=f"YOLO detection error: {str(e)}",
             )
-
 
 class RCNNObjectDetectionStage(PipelineStage):
     """Placeholder for RCNN-based object detection."""
@@ -548,9 +760,8 @@ class RCNNObjectDetectionStage(PipelineStage):
             )
 
 
-def create_default_pipeline(model_path: str, object_detection_model: str = "hogsvm"):
+def create_default_pipeline(model_path: str, object_detection_model: str = "yolo"):
     """Create a pipeline with all stages."""
-    from pipeline import SmogClassificationPipeline
     
     pipeline = SmogClassificationPipeline()
     pipeline.add_stage(SmogClassificationStage(model_path))
@@ -558,7 +769,10 @@ def create_default_pipeline(model_path: str, object_detection_model: str = "hogs
 
     detection_model = (object_detection_model or "hogsvm").strip().lower()
     if detection_model == "yolo":
-        pipeline.add_stage(YOLOObjectDetectionStage())
+        pipeline.add_stage(YOLOObjectDetectionStage(
+            model_path="yolo26n.pt",  # Best for CPU
+            confidence_threshold=0.4   # Slightly lower for smoggy images
+        ))
     elif detection_model == "rcnn":
         pipeline.add_stage(RCNNObjectDetectionStage())
     else:
