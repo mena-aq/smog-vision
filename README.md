@@ -1,16 +1,24 @@
 # 🌫️ Smog Classification Pipeline
 
-A modular, extensible desktop GUI application for smog detection using a trained ResNet18 CNN.
+A modular, extensible desktop GUI application for smog detection and object detection using a trained CNN and multiple dehazing, and object detection dechniques
 
 ## Features
 
 - **Professional Desktop UI** - PyQt6-based graphical interface
 - **Simple Image Upload** - Select and preview images before classification
 - **Real-time Predictions** - Fast inference with confidence scores
-- **Probability Visualization** - Bar charts showing Clear vs Smog probabilities
 - **Extensible Pipeline** - Add new stages for image enhancement, segmentation, etc.
 - **PyTorch-based** - Uses your trained ResNet18 model
 - **Multi-threaded** - Non-blocking UI during model inference
+
+## Core Techniques
+
+- **ResNet18**: Binary smog classification with residual connections
+- **YOLOv8m**: Real-time multi-class object detection
+- **Haar Cascade**: Classical AdaBoost vehicle detector
+- **Segmentation Masks**: Pixel-level semantic segmentation for object detction
+- **R-CNN**: Instance-level region-based CNN for per-object segmentation
+- **HOG + SVM**: Classical feature-based classification
 
 ## Installation
 
@@ -21,6 +29,15 @@ pip install -r requirements.txt
 
 2. Ensure your model file exists at the configured path (default: `smog-classification/smog_classifier.pth`)
 
+3. Setup haar
+Download the Haar Cascade XML file from OpenCV's GitHub repository and save it as `haarcascade_car.xml` in the project root:
+
+```
+https://github.com/andrewssobral/vehicle_detection_haarcascades/blob/master/cars.xml#L18
+```
+
+Rename the downloaded file to `haarcascade_car.xml` and place it in this directory.
+
 ## Running the App
 
 ```bash
@@ -28,20 +45,6 @@ python app.py
 ```
 
 The desktop GUI will launch as a standalone window.
-
-## Project Structure
-
-```
-dip-smog/
-├── app.py              # PyQt6 desktop GUI
-├── inference.py        # Model loading and inference
-├── pipeline.py         # Pipeline architecture (extensible)
-├── stages.py           # Individual pipeline stages
-├── requirements.txt    # Dependencies
-├── examples.py         # Example usage patterns
-└── smog-classification/
-    └── smog_classifier.pth  # Trained model
-```
 
 ## How It Works
 
@@ -69,153 +72,24 @@ dip-smog/
 - Wraps the inference module
 - Can be extended with additional stages
 
+
 ## UI Overview
 
-### Main Window
-- **Left Panel**: Image upload, configuration, classify button
-- **Right Panel**: Tabbed results view (Summary & Details)
+- **Left Panel**: Main processing interface with controls and results display
+  - Upload Image/Video button for file selection
+  - Dehazing Method selector (DCP, CLAHE)
+  - Object Detection Method selector (HOG+SVM, YOLO, RCNN)
+  - Process button to run the pipeline
+  - Pipeline Output group: Original → Dehazed → Final Result (Dehazed)
+  - Comparison group: Original → Final Result (Original)
+  - View Masks button for segmentation visualization
 
-### Summary Tab
-- Large classification result (Clear/Smog)
-- Confidence percentage
-- Progress bar visualization
-- Bar chart showing probability distribution
+- **Right Panel**: Model metrics and pipeline results
+  - Classification results and confidence scores
+  - Detection information
+  - Processing statistics
+  - Scrollable metrics display
 
-### Details Tab
-- Full classification report
-- All numerical values (logit, probabilities)
-- Image and model information
-- Useful for debugging and analysis
+## System Architecture
 
-## Extending the Pipeline
-
-To add a new pipeline stage (e.g., image enhancement, segmentation):
-
-### Example: Add an Image Enhancement Stage
-
-```python
-# In stages.py, add:
-
-class ImageEnhancementStage(PipelineStage):
-    """Stage for image enhancement."""
-    
-    def __init__(self):
-        super().__init__("Image Enhancement")
-    
-    def process(self, input_data: dict) -> PipelineResult:
-        """
-        Enhance image quality.
-        
-        Input: {"image_input": <PIL Image>, "classification": {...}}
-        Output: {"enhanced_image": <PIL Image>, ...}
-        """
-        try:
-            image = input_data.get("image_input")
-            
-            # Your enhancement logic here
-            enhanced = self._enhance(image)
-            
-            return PipelineResult(
-                stage_name=self.name,
-                success=True,
-                data={
-                    **input_data,
-                    "enhanced_image": enhanced
-                }
-            )
-        except Exception as e:
-            return PipelineResult(
-                stage_name=self.name,
-                success=False,
-                data={},
-                error=str(e)
-            )
-    
-    def _enhance(self, image):
-        # Enhancement logic
-        pass
-```
-
-### Then register the stage:
-
-```python
-# In stages.py, update create_default_pipeline():
-
-def create_default_pipeline(model_path: str):
-    from pipeline import SmogClassificationPipeline
-    
-    pipeline = SmogClassificationPipeline()
-    pipeline.add_stage(SmogClassificationStage(model_path))
-    pipeline.add_stage(ImageEnhancementStage())  # ← New stage
-    
-    return pipeline
-```
-
-## Model Details
-
-- **Architecture**: ResNet18 (pretrained on ImageNet)
-- **Input Size**: 224×224 pixels
-- **Output**: Binary classification (1 logit → sigmoid)
-- **Normalization**: ImageNet standard (mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-- **Classes**: 
-  - 0: Clear
-  - 1: Smog
-
-## Usage Example
-
-```python
-from inference import SmogClassifier
-
-classifier = SmogClassifier("smog-classification/smog_classifier.pth")
-
-result = classifier.predict("path/to/image.jpg")
-print(result)
-# Output:
-# {
-#     "class": "Smog",
-#     "confidence": 0.95,
-#     "logit": 2.944,
-#     "probability_clear": 0.05,
-#     "probability_smog": 0.95
-# }
-```
-
-## Pipeline Usage Example
-
-```python
-from stages import create_default_pipeline
-
-pipeline = create_default_pipeline("smog-classification/smog_classifier.pth")
-result = pipeline.run("path/to/image.jpg")
-
-print(result)
-# Output:
-# {
-#     "success": True,
-#     "stages": [...],
-#     "final_data": {...}
-# }
-```
-
-## Troubleshooting
-
-**Model not found**: Use the "Browse..." button in the app to locate your model file
-
-**Image not loading**: Check that the image format is supported (JPG, PNG, BMP)
-
-**CUDA errors**: The app will automatically fall back to CPU if CUDA is unavailable
-
-**Slow inference**: First run loads the model; subsequent runs are faster. GPU (if available) speeds up inference significantly
-
-## Future Enhancements
-
-- [ ] Batch processing for multiple images
-- [ ] Drag-and-drop image upload
-- [ ] Image segmentation visualization
-- [ ] Confidence threshold alerts and filtering
-- [ ] Prediction history and statistics dashboard
-- [ ] Export results to CSV/JSON
-- [ ] Support for video frame processing
-- [ ] Webcam live feed classification
-- [ ] Model performance metrics comparison
-- [ ] Customizable color scheme and dark mode
+Multi-stage pipeline with parallel processing. ResNet18, YOLOv8, Haar Cascade, and HOG+SVM operate independently. Detection outputs guide region analysis; segmentation masks provide spatial context.
