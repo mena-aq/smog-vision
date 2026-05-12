@@ -217,6 +217,7 @@ class SmogVisionGUI(QMainWindow):
         self.detector_dropdown.setEnabled(True)
         self.detector_dropdown.setVisible(True)
         self.detector_dropdown.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.detector_dropdown.currentTextChanged.connect(self.on_detector_changed)
         upload_row.addWidget(self.detector_dropdown)
 
         # Process Button
@@ -342,6 +343,8 @@ class SmogVisionGUI(QMainWindow):
         
         self.total_time_label = self.create_metric_row("Total Pipeline Time", "0ms", highlight=True)
         layout.addWidget(self.total_time_label)
+
+        self.update_detection_metrics_title(self.detector_dropdown.currentText() if self.detector_dropdown else "Select Detection Method")
         
         return widget
     
@@ -483,6 +486,23 @@ class SmogVisionGUI(QMainWindow):
         box.setProperty("metric_widgets", metric_widgets)
         box.setProperty("title_label", t_label)
         return box
+
+    def on_detector_changed(self, selected_method: str):
+        """Update the object-detection metrics title as soon as the dropdown changes."""
+        self.update_detection_metrics_title(selected_method)
+
+    def update_detection_metrics_title(self, selected_method: str):
+        """Set the active object-detection metrics title from the selected detector."""
+        method_titles = {
+            "HOG + SVM": "HOG + SVM",
+            "YOLO": "YOLO Detector",
+            "RCNN": "RCNN Detector",
+        }
+        title_text = method_titles.get(selected_method, "Object Detection")
+
+        for box in (self.hog_svm_metrics, self.yolo_metrics, self.rcnn_metrics):
+            if box is not None:
+                box.property("title_label").setText(title_text)
     
     def create_divider(self):
         """Helper to create a horizontal divider."""
@@ -615,7 +635,7 @@ class SmogVisionGUI(QMainWindow):
                     proc_time = hog.get("processing_time_ms", 0)
                     total_time += proc_time
 
-                    self.hog_svm_metrics.property("title_label").setText("HOG + SVM")
+                    self.update_detection_metrics_title("HOG + SVM")
                     self.hog_svm_metrics.setVisible(True)
                     self.yolo_metrics.setVisible(False)
                     self.rcnn_metrics.setVisible(False)
@@ -637,7 +657,7 @@ class SmogVisionGUI(QMainWindow):
                     total_time += proc_time
 
                     # Ensure the YOLO metrics box is visible
-                    self.yolo_metrics.property("title_label").setText("YOLO Detector")
+                    self.update_detection_metrics_title("YOLO")
                     self.yolo_metrics.setVisible(True)
                     self.hog_svm_metrics.setVisible(False)
                     self.rcnn_metrics.setVisible(False)
@@ -662,7 +682,7 @@ class SmogVisionGUI(QMainWindow):
                     total_time += proc_time
 
                     # Ensure RCNN metrics box is visible
-                    self.rcnn_metrics.property("title_label").setText("RCNN Detector")
+                    self.update_detection_metrics_title("RCNN")
                     self.rcnn_metrics.setVisible(True)
                     self.hog_svm_metrics.setVisible(False)
                     self.yolo_metrics.setVisible(False)
