@@ -67,22 +67,32 @@ class SmogClassificationStage(PipelineStage):
             )
 
 
-class DCPDehazingStage(PipelineStage):
-    """Placeholder for DCP Dehazing stage."""
+class DehazingStage(PipelineStage):
+    """Dehazing stage supporting DCP and CLAHE methods."""
     
     def __init__(self, patch_size: int = 15, omega: float = 0.75, t_min: float = 0.2):
         """
         Args:
-            patch_size: Size of the local patch for dark channel computation (default 15).
-            omega:      Haze retention factor — 0.95 keeps a tiny bit of haze for
-                        realism; set to 1.0 to remove all estimated haze.
-            t_min:      Minimum transmission value to avoid division by zero (default 0.1).
+            method:     Dehazing algorithm: "dcp" (Dark Channel Prior) or "clahe" (CLAHE-based)
+            patch_size: Size of the local patch for dark channel computation (DCP only, default 15).
+            omega:      Haze retention factor — 0.95 keeps a tiny bit of haze for realism (DCP only).
+            t_min:      Minimum transmission value to avoid division by zero (DCP only, default 0.1).
+            clahe_clip: Contrast limit for CLAHE (CLAHE only, default 3.0).
+            clahe_tile: Tile grid size for CLAHE (CLAHE only, default 8 for 8x8 grid).
+            color_boost: Factor to boost color saturation (both methods, default 1.3).
         """
-        super().__init__("DCP Dehazing")
+        super().__init__("DCP Dehazing" if method == "dcp" else "CLAHE Dehazing")
+        self.method = method.lower()
         self.patch_size = patch_size
         self.omega = omega
         self.t_min = t_min
-    
+        self.clahe_clip = clahe_clip
+        self.clahe_tile = clahe_tile
+        self.color_boost = color_boost
+
+        
+        if self.method not in ("dcp", "clahe"):
+            raise ValueError(f"Unknown dehazing method: {method}. Use 'dcp' or 'clahe'.")
     def process(self, input_data: dict) -> PipelineResult:
         """
         Input:  {"image_input": <str path | PIL Image | np.ndarray>, ...}
@@ -94,11 +104,21 @@ class DCPDehazingStage(PipelineStage):
 
             start = time.time()
 
-            dark = self._dark_channel(img_np)
-            A= self._atmospheric_light(img_np, dark)
-            t_raw = self._transmission(img_np, A)
-            t_refined= self._guided_filter(img_np, t_raw)
-            dehazed_np= self._recover(img_np, t_refined, A)
+            if self.method == "dcp":
+                dehazed_np = self._dehaze_dcp(img_np)
+                metrics_key = "dcp_metrics"
+                metrics = {
+                    "method": "DCP (Dark Channel Prior)",
+                    "transmission_map": float(np.mean(self._transmission(img_np, self._atmospheric_light(img_np, self._dark_channel(img_np))))),
+                    "processing_time_ms": round((time.time() - start) * 1000, 1),
+                }
+            else:  # clahe
+                dehazed_np = self._dehaze_clahe(img_np)
+                metrics_key = "clahe_metrics"
+                metrics = {
+                    "method": "CLAHE (Contrast Limited Adaptive Histogram Equalization)",
+                    "processing_time_ms": round((time.time() - start) * 1000, 1),
+                }
 
             elapsed = time.time() - start
 
@@ -106,17 +126,10 @@ class DCPDehazingStage(PipelineStage):
                 (dehazed_np * 255).clip(0, 255).astype(np.uint8)
             )
 
-            dcp_metrics = {
-                "transmission_map": float(np.mean(t_refined)),
-                "dark_channel": float(np.mean(dark)),
-                "airlight_rgb": tuple(round(float(v), 3) for v in A),
-                "processing_time_ms": round(elapsed * 1000, 1),
-            }
-
             return PipelineResult(
                 stage_name=self.name,
                 success=True,
-                data={**input_data, "dehazed_image": dehazed_pil, "dcp_metrics": dcp_metrics},
+                data={**input_data, "dehazed_image": dehazed_pil, metrics_key: metrics},
             )
 
         except Exception as e:
@@ -127,7 +140,7 @@ class DCPDehazingStage(PipelineStage):
                 error=str(e)
             )
 
-    def _dehaze(self, img: np.ndarray) -> np.ndarray:
+    def _dehaze_dcp(self, img: np.ndarray) -> np.ndarray:
         """Full DCP pipeline on a float32 RGB image in [0, 1]."""
         dark          = self._dark_channel(img)
         A             = self._atmospheric_light(img, dark)
@@ -135,6 +148,28 @@ class DCPDehazingStage(PipelineStage):
         t_refined     = self._guided_filter(img, t_raw)
         recovered     = self._recover(img, t_refined, A)
         return recovered
+    
+    def _dehaze_clahe(self, img: np.ndarray) -> np.ndarray:
+        """Simple CLAHE-based dehazing for hazy images."""
+        img_uint8 = (img * 255).astype(np.uint8)
+        
+        # Convert to LAB (decouple luminance from color)
+        lab = cv2.cvtColor(img_uint8, cv2.COLOR_RGB2LAB)
+        l, a, b = cv2.split(lab)
+        
+        # Apply CLAHE to L channel only (preserves color)
+        clahe = cv2.createCLAHE(clipLimit=self.clahe_clip, tileGridSize=(self.clahe_tile, self.clahe_tile))
+        l_clahe = clahe.apply(l)
+
+        a_boosted = np.clip(128 + (a.astype(np.float32) - 128) * self.color_boost, 0, 255).astype(np.uint8)
+        b_boosted = np.clip(128 + (b.astype(np.float32) - 128) * self.color_boost, 0, 255).astype(np.uint8)
+    
+        
+        # Merge back
+        lab_enhanced = cv2.merge([l_clahe, a_boosted, b_boosted])
+        result_uint8 = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2RGB)
+        
+        return result_uint8.astype(np.float32) / 255.0
 
     def _dark_channel(self, img: np.ndarray) -> np.ndarray:
         """
