@@ -537,7 +537,7 @@ class SmogVisionGUI(QMainWindow):
         # Make segmented view clickable (top row - Pipeline Output)
         segmented_label = self.segmented_view.property("image_label")
         segmented_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        segmented_label.clicked.connect(lambda: self.open_segmented_viewer("dehazed"))
+        segmented_label.clicked.connect(lambda: self.select_image_for_stage1("dehazed"))
         
         # Change this in create_left_panel
         pipeline_layout.addWidget(self.original_view, 1) # Added stretch factor 1
@@ -555,7 +555,7 @@ class SmogVisionGUI(QMainWindow):
         self.final_result_view = self.create_image_view("Final Result - Original")
         final_result_label = self.final_result_view.property("image_label")
         final_result_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        final_result_label.clicked.connect(lambda: self.open_segmented_viewer("original"))
+        final_result_label.clicked.connect(lambda: self.select_image_for_stage1("original"))
         
         comparison_layout.addWidget(self.final_original_view)
         comparison_layout.addWidget(self.create_arrow(large=True))
@@ -629,6 +629,27 @@ class SmogVisionGUI(QMainWindow):
         title = "Detection Result - Dehazed" if view_type == "dehazed" else "Detection Result - Original"
         viewer = ImageViewerDialog(image, title, self)
         viewer.exec()
+
+    def select_image_for_stage1(self, view_type: str):
+        """When a thumbnail is clicked, keep pipeline visible and fill Stage 1 with that image."""
+        try:
+            if view_type == "dehazed":
+                img = self.segmented_image_dehazed
+            else:
+                img = self.segmented_image_original or self.segmented_image_dehazed
+
+            if img is None:
+                return
+
+            # Ensure results panel remains visible and update Stage 1 (original_view)
+            self.results_widget.setVisible(True)
+            self.display_image(img, self.original_view.property("image_label"))
+
+            # Also update CNN stage display to reflect the selected image
+            self.display_image(img, self.dehazed_view.property("image_label"))
+
+        except Exception as e:
+            print(f"ERROR in select_image_for_stage1: {e}")
 
     def open_mask_viewer(self):
         """Open mask viewer dialog."""
@@ -921,7 +942,7 @@ class SmogVisionGUI(QMainWindow):
             self.file_path = file_path
             self.upload_button.setText(f" {os.path.basename(file_path)}")
             self.process_button.setEnabled(True)
-            self.results_widget.setVisible(False)
+            self.results_widget.setVisible(True)  # Keep pipeline UI visible
             
             # Display first frame if video
             if file_path.lower().endswith(('.mp4', '.avi')):
