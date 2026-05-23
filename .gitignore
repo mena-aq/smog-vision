@@ -55,6 +55,7 @@ Thumbs.db
 
 #yolo
 yolo8m.pt
+yolov8m.pt
 
 #haar
 haarcascade_car.xml
