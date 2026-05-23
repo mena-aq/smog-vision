@@ -326,10 +326,11 @@ class HOGSVMObjectDetectionStage(PipelineStage):
             self,
             person_win_stride: tuple = (4, 4),
             person_padding: tuple = (8, 8),
-            person_scale: float = 1.01,
-            car_scale_factor: float = 1.05,
+            person_scale: float = 1.05,
+            car_scale_factor: float = 1.1,
             car_min_neighbors: int = 2,
             car_min_size: tuple = (35, 35),
+            max_dimension: int = 800,
         ):
             super().__init__("HOG+SVM Object Detection")
 
@@ -339,6 +340,7 @@ class HOGSVMObjectDetectionStage(PipelineStage):
             self.person_win_stride = person_win_stride
             self.person_padding    = person_padding
             self.person_scale      = person_scale
+            self.max_dimension     = max_dimension
 
             # --- Car detector (Local Haar cascade) ---
             # Look for the file in your current project directory
@@ -373,17 +375,36 @@ class HOGSVMObjectDetectionStage(PipelineStage):
             dehazed_source = input_data.get("dehazed_image")
             dehazed_np = self._to_numpy_uint8(dehazed_source)
             dehazed_bgr = cv2.cvtColor(dehazed_np, cv2.COLOR_RGB2BGR)
-            people_dcp, people_weights_dcp = self._detect_people(dehazed_bgr)
-            cars_dcp = self._detect_cars(dehazed_bgr)
+            
+            # Resize if too large for faster processing
+            dehazed_resized, scale_factor_dcp = self._maybe_resize(dehazed_bgr)
+            print(f"HOG+SVM: Dehazed image scaled by {scale_factor_dcp:.2f}")
+            
+            people_dcp, people_weights_dcp = self._detect_people(dehazed_resized)
+            cars_dcp = self._detect_cars(dehazed_resized)
+            
+            # Scale detections back to original size
+            people_dcp = self._scale_boxes(people_dcp, 1.0 / scale_factor_dcp) if scale_factor_dcp != 1.0 else people_dcp
+            cars_dcp = self._scale_boxes(cars_dcp, 1.0 / scale_factor_dcp) if scale_factor_dcp != 1.0 else cars_dcp
             
             # Detection on original image (for bottom row)
             original_source = input_data.get("image_input")
             original_np = self._to_numpy_uint8(original_source)
             original_bgr = cv2.cvtColor(original_np, cv2.COLOR_RGB2BGR)
-            people_orig, people_weights_orig = self._detect_people(original_bgr)
-            cars_orig = self._detect_cars(original_bgr)
+            
+            # Resize if too large for faster processing
+            original_resized, scale_factor_orig = self._maybe_resize(original_bgr)
+            print(f"HOG+SVM: Original image scaled by {scale_factor_orig:.2f}")
+            
+            people_orig, people_weights_orig = self._detect_people(original_resized)
+            cars_orig = self._detect_cars(original_resized)
+            
+            # Scale detections back to original size
+            people_orig = self._scale_boxes(people_orig, 1.0 / scale_factor_orig) if scale_factor_orig != 1.0 else people_orig
+            cars_orig = self._scale_boxes(cars_orig, 1.0 / scale_factor_orig) if scale_factor_orig != 1.0 else cars_orig
 
             elapsed_ms = round((time.time() - start) * 1000, 1)
+            print(f"HOG+SVM detection completed in {elapsed_ms}ms")
 
             # Annotate dehazed image
             annotated_dehazed = dehazed_bgr.copy()
@@ -428,6 +449,8 @@ class HOGSVMObjectDetectionStage(PipelineStage):
             )
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return PipelineResult(
                 stage_name=self.name,
                 success=False,
@@ -447,6 +470,35 @@ class HOGSVMObjectDetectionStage(PipelineStage):
             return [], []
         boxes  = self._nms(boxes, overlap_thresh=0.65)
         return boxes, weights[:len(boxes)]
+
+    def _maybe_resize(self, img_bgr: np.ndarray) -> tuple:
+        """Resize image if it's too large. Returns (resized_img, scale_factor)."""
+        h, w = img_bgr.shape[:2]
+        max_dim = max(h, w)
+        
+        if max_dim > self.max_dimension:
+            scale = self.max_dimension / max_dim
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            resized = cv2.resize(img_bgr, (new_w, new_h))
+            return resized, scale
+        
+        return img_bgr, 1.0
+    
+    @staticmethod
+    def _scale_boxes(boxes, scale_factor: float):
+        """Scale bounding boxes by a scale factor."""
+        if scale_factor == 1.0 or len(boxes) == 0:
+            return boxes
+        
+        scaled = []
+        for box in boxes:
+            x, y, w, h = box
+            scaled_box = [int(x * scale_factor), int(y * scale_factor), 
+                         int(w * scale_factor), int(h * scale_factor)]
+            scaled.append(scaled_box)
+        
+        return np.array(scaled)
 
     def _detect_cars(self, img_bgr: np.ndarray):
         """Run Haar cascade car detector. Returns list of (x, y, w, h)."""
