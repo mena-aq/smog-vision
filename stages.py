@@ -419,13 +419,12 @@ class HOGSVMObjectDetectionStage(PipelineStage):
             segmented_orig_pil = Image.fromarray(cv2.cvtColor(annotated_orig, cv2.COLOR_BGR2RGB))
 
             detections = (
-                [{"type": "person", "box": list(map(int, b)), "weight": float(w)}
-                 for b, w in zip(people_orig, people_weights_orig)]
+                [{"type": "person", "bbox": list(map(int, b)), "weight": float(w)}
+                for b, w in zip(people_orig, people_weights_orig)]
                 +
-                [{"type": "car",    "box": list(map(int, b))}
-                 for b in cars_orig]
+                [{"type": "car", "bbox": list(map(int, b))}
+                for b in cars_orig]
             )
-
             hog_metrics = {
                 "people_count_dehazed": len(people_dcp),
                 "car_count_dehazed": len(cars_dcp),
