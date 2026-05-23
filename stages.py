@@ -93,6 +93,7 @@ class DehazingStage(PipelineStage):
         
         if self.method not in ("dcp", "clahe"):
             raise ValueError(f"Unknown dehazing method: {method}. Use 'dcp' or 'clahe'.")
+            
     def process(self, input_data: dict) -> PipelineResult:
         """
         Input:  {"image_input": <str path | PIL Image | np.ndarray>, ...}
@@ -574,7 +575,6 @@ class YOLOObjectDetectionStage(PipelineStage):
             5: 'bus',
             6: 'train',
             7: 'truck',
-            8: 'boat',
         }
         
         self.person_color = (0, 255, 0)      # Green for people
@@ -997,7 +997,8 @@ class MaskGenerationStage(PipelineStage):
     """Generate segmentation masks with object outlines from detected regions."""
 
     def __init__(self, method: str = "contour", canny_low: int = 50, canny_high: int = 150,
-                 min_contour_area: int = 20, dilate_iterations: int = 0, kernel_size: int = 3):
+                 min_contour_area: int = 20, dilate_iterations: int = 0, kernel_size: int = 3,
+                 max_dimension: int = 1024):
         """
         Args:
             method: "contour" (extract edges from detection region) or "filled" (filled rectangles)
@@ -1006,6 +1007,7 @@ class MaskGenerationStage(PipelineStage):
             min_contour_area: Minimum contour area to draw (larger = ignore small noise)
             dilate_iterations: Dilation iterations (0 = sharp, 1+ = thicker/fuzzier)
             kernel_size: Morphological kernel size used for open/close and dilation
+            max_dimension: Maximum image width/height (images larger are downsampled, default 1024)
         """
         super().__init__("Mask Generation")
         self.method = method.lower()
@@ -1014,6 +1016,7 @@ class MaskGenerationStage(PipelineStage):
         self.min_contour_area = int(min_contour_area)
         self.dilate_iterations = int(dilate_iterations)
         self.kernel_size = int(kernel_size)
+        self.max_dimension = int(max_dimension)
 
         if self.method not in ("contour", "filled"):
             raise ValueError(f"Unknown mask method: {method}. Use 'contour' or 'filled'.")
@@ -1027,7 +1030,6 @@ class MaskGenerationStage(PipelineStage):
             'motorcycle': (0, 165, 255),  # Orange
             'bicycle': (0, 165, 255),     # Orange
             'train': (0, 165, 255),       # Orange
-            'boat': (0, 165, 255),        # Orange
         }
     
     def process(self, input_data: dict) -> PipelineResult:
@@ -1060,6 +1062,30 @@ class MaskGenerationStage(PipelineStage):
             
             print(f"After conversion: dehazed_np.shape={dehazed_np.shape}, original_np.shape={original_np.shape}")
             
+            # Check if images are too large and resize if needed
+            scale_factor = 1.0
+            max_dim_dcp = max(dehazed_np.shape[:2])
+            max_dim_orig = max(original_np.shape[:2])
+            
+            if max_dim_dcp > self.max_dimension or max_dim_orig > self.max_dimension:
+                # Use the larger image's scale factor
+                scale_factor = min(
+                    self.max_dimension / max_dim_dcp if max_dim_dcp > self.max_dimension else 1.0,
+                    self.max_dimension / max_dim_orig if max_dim_orig > self.max_dimension else 1.0
+                )
+                scale_factor = max(scale_factor, 0.1)  # Don't shrink below 10%
+                
+                if scale_factor < 1.0:
+                    new_w_dcp = int(dehazed_np.shape[1] * scale_factor)
+                    new_h_dcp = int(dehazed_np.shape[0] * scale_factor)
+                    dehazed_np = cv2.resize(dehazed_np, (new_w_dcp, new_h_dcp))
+                    
+                    new_w_orig = int(original_np.shape[1] * scale_factor)
+                    new_h_orig = int(original_np.shape[0] * scale_factor)
+                    original_np = cv2.resize(original_np, (new_w_orig, new_h_orig))
+                    
+                    print(f"Resized images by {scale_factor:.2f} to {dehazed_np.shape[1]}x{dehazed_np.shape[0]}")
+            
             h_d, w_d = dehazed_np.shape[:2]
             h_o, w_o = original_np.shape[:2]
             
@@ -1075,21 +1101,53 @@ class MaskGenerationStage(PipelineStage):
                 if len(bbox) < 4:
                     continue
                 
-                x, y, w, h = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
-                x2, y2 = x + w, y + h
-                
-                # Get color for this class (RGB → BGR for OpenCV)
-                color_rgb = self.class_colors.get(class_type, (128, 128, 128))
-                color_bgr = (color_rgb[2], color_rgb[1], color_rgb[0])
-                
-                if self.method == "contour":
-                    # Extract contours from both source images
-                    self._draw_contour_mask(dehazed_np, mask_dehazed, x, y, x2, y2, color_bgr)
-                    self._draw_contour_mask(original_np, mask_original, x, y, x2, y2, color_bgr)
-                else:
-                    # Simple filled rectangles
-                    cv2.rectangle(mask_dehazed, (x, y), (x2, y2), color_bgr, -1)
-                    cv2.rectangle(mask_original, (x, y), (x2, y2), color_bgr, -1)
+                try:
+                    x, y, w, h = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+                    
+                    # Skip invalid bounding boxes
+                    if w <= 0 or h <= 0:
+                        continue
+                    
+                    # Scale bounding box if images were resized
+                    if scale_factor < 1.0:
+                        x = int(x * scale_factor)
+                        y = int(y * scale_factor)
+                        w = int(w * scale_factor)
+                        h = int(h * scale_factor)
+                    
+                    x2, y2 = x + w, y + h
+                    
+                    # Clamp to image bounds
+                    x = max(0, min(x, w_d - 1))
+                    y = max(0, min(y, h_d - 1))
+                    x2 = max(x + 1, min(x2, w_d))
+                    y2 = max(y + 1, min(y2, h_d))
+                    
+                    # Get color for this class (RGB → BGR for OpenCV)
+                    color_rgb = self.class_colors.get(class_type, (128, 128, 128))
+                    color_bgr = (color_rgb[2], color_rgb[1], color_rgb[0])
+                    
+                    if self.method == "contour":
+                        # Extract contours from both source images
+                        self._draw_contour_mask(dehazed_np, mask_dehazed, x, y, x2, y2, color_bgr)
+                        self._draw_contour_mask(original_np, mask_original, x, y, x2, y2, color_bgr)
+                    else:
+                        # Simple filled rectangles
+                        cv2.rectangle(mask_dehazed, (x, y), (x2, y2), color_bgr, -1)
+                        cv2.rectangle(mask_original, (x, y), (x2, y2), color_bgr, -1)
+                        
+                except Exception as e:
+                    print(f"Warning: Failed to process detection {detection}: {e}")
+                    continue
+            
+            # If we resized, scale masks back to original size
+            if scale_factor < 1.0:
+                original_h_d = int(h_d / scale_factor)
+                original_w_d = int(w_d / scale_factor)
+                original_h_o = int(h_o / scale_factor)
+                original_w_o = int(w_o / scale_factor)
+                mask_dehazed = cv2.resize(mask_dehazed, (original_w_d, original_h_d))
+                mask_original = cv2.resize(mask_original, (original_w_o, original_h_o))
             
             # Convert masks back to PIL
             mask_dehazed_pil = Image.fromarray(mask_dehazed, mode="RGB")
@@ -1110,6 +1168,7 @@ class MaskGenerationStage(PipelineStage):
                         "num_detections": len(detections),
                         "processing_time_ms": processing_time_ms,
                         "mask_method": self.method,
+                        "image_resize_scale": scale_factor,
                     }
                 },
             )
@@ -1135,79 +1194,83 @@ class MaskGenerationStage(PipelineStage):
             x1, y1, x2, y2: Bounding box coordinates
             color_bgr: Color to draw contours in BGR format
         """
-        # Bounds check
-        h, w = source_img.shape[:2]
-        x1 = max(0, min(x1, w-1))
-        y1 = max(0, min(y1, h-1))
-        x2 = max(x1+1, min(x2, w))
-        y2 = max(y1+1, min(y2, h))
-        
-        # Extract region of interest
-        roi = source_img[y1:y2, x1:x2]
-        
-        if roi.size == 0:
-            # Fallback if ROI is empty
-            cv2.rectangle(mask, (x1, y1), (x2, y2), color_bgr, -1)
-            return
-        
-        # Convert to grayscale
-        if len(roi.shape) == 3:
-            gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
-        else:
-            gray = roi
-        
-        # Apply morphological operations to enhance edges and reduce noise
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        gray = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)  # Close holes
-        gray = cv2.morphologyEx(gray, cv2.MORPH_OPEN, kernel)   # Remove small noise
-        
-        # Edge detection with configurable thresholds
-        edges = cv2.Canny(gray, self.canny_low, self.canny_high)
-
-        # Dilate to connect broken edges (configurable)
-        if self.dilate_iterations > 0:
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.kernel_size, self.kernel_size))
-            edges = cv2.dilate(edges, kernel, iterations=self.dilate_iterations)
-        
-        # Find contours
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        if not contours:
-            # Fallback: draw filled rectangle if no contours found (hazy/low-contrast regions)
-            cv2.rectangle(mask, (x1, y1), (x2, y2), color_bgr, -1)
-            return
-        
-        # Draw all contours on the mask
-        for contour in contours:
-            # Filter out very small contours (noise)
-            area = cv2.contourArea(contour)
-            if area > self.min_contour_area:  # Configurable area threshold
-                # Shift contour back to original image coordinates
-                contour_shifted = contour + np.array([x1, y1])
-                
-                # Draw filled contour on mask
-                cv2.drawContours(mask, [contour_shifted], 0, color_bgr, -1)
-
-    @staticmethod
-    def _to_numpy_uint8(image_input) -> np.ndarray:
-        """Convert path / PIL Image / ndarray → uint8 RGB."""
-        if isinstance(image_input, str):
-            return np.array(Image.open(image_input).convert("RGB"), dtype=np.uint8)
-        elif isinstance(image_input, Image.Image):
-            return np.array(image_input.convert("RGB"), dtype=np.uint8)
-        elif isinstance(image_input, np.ndarray):
-            if image_input.size == 0:
-                raise ValueError(f"Empty numpy array: shape={image_input.shape}")
-            if image_input.ndim == 3 and image_input.shape[2] in (3, 4):
-                return image_input[:, :, :3].astype(np.uint8)  # Take RGB channels only
-            elif image_input.ndim == 2:
-                # Grayscale, convert to RGB
-                return np.stack([image_input, image_input, image_input], axis=2).astype(np.uint8)
+        try:
+            # Bounds check
+            h, w = source_img.shape[:2]
+            x1 = max(0, min(x1, w-1))
+            y1 = max(0, min(y1, h-1))
+            x2 = max(x1+1, min(x2, w))
+            y2 = max(y1+1, min(y2, h))
+            
+            roi_w = x2 - x1
+            roi_h = y2 - y1
+            
+            # Skip if ROI is too small
+            if roi_w < 3 or roi_h < 3:
+                cv2.rectangle(mask, (x1, y1), (x2, y2), color_bgr, -1)
+                return
+            
+            # Extract region of interest
+            roi = source_img[y1:y2, x1:x2].copy()
+            
+            if roi.size == 0:
+                # Fallback if ROI is empty
+                cv2.rectangle(mask, (x1, y1), (x2, y2), color_bgr, -1)
+                return
+            
+            # Convert to grayscale
+            if len(roi.shape) == 3:
+                gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
             else:
-                raise ValueError(f"Unexpected array shape: {image_input.shape}")
-        else:
-            raise TypeError(f"Unsupported image type: {type(image_input)}")
-    
+                gray = roi.astype(np.uint8)
+            
+            # Apply morphological operations to enhance edges and reduce noise
+            # Use smaller kernel for small ROIs to avoid errors
+            kernel_size = min(3, min(roi_w, roi_h) // 2) * 2 + 1
+            kernel_size = max(3, kernel_size)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+            
+            try:
+                gray = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)  # Close holes
+                gray = cv2.morphologyEx(gray, cv2.MORPH_OPEN, kernel)   # Remove small noise
+            except:
+                # If morphology fails, continue with original gray
+                pass
+            
+            # Edge detection with configurable thresholds
+            edges = cv2.Canny(gray, self.canny_low, self.canny_high)
+
+            # Dilate to connect broken edges (configurable)
+            if self.dilate_iterations > 0:
+                dilation_kernel_size = min(self.kernel_size, min(roi_w, roi_h) // 3) * 2 + 1
+                dilation_kernel_size = max(3, dilation_kernel_size)
+                dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation_kernel_size, dilation_kernel_size))
+                edges = cv2.dilate(edges, dilate_kernel, iterations=self.dilate_iterations)
+            
+            # Find contours
+            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if not contours:
+                # Fallback: draw filled rectangle if no contours found (hazy/low-contrast regions)
+                cv2.rectangle(mask, (x1, y1), (x2, y2), color_bgr, -1)
+                return
+            
+            # Draw all contours on the mask
+            for contour in contours:
+                # Filter out very small contours (noise)
+                area = cv2.contourArea(contour)
+                if area > self.min_contour_area:  # Configurable area threshold
+                    # Shift contour back to original image coordinates
+                    contour_shifted = contour + np.array([x1, y1])
+                    
+                    # Draw filled contour on mask
+                    cv2.drawContours(mask, [contour_shifted], 0, color_bgr, -1)
+        
+        except Exception as e:
+            # Fallback: just draw filled rectangle
+            print(f"Contour extraction failed: {e}, using filled rectangle fallback")
+            cv2.rectangle(mask, (x1, y1), (x2, y2), color_bgr, -1)
+
     @staticmethod
     def _to_numpy_uint8(image_input) -> np.ndarray:
         """Convert path / PIL Image / ndarray → uint8 RGB."""
