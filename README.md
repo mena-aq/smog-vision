@@ -1,24 +1,33 @@
 # 🌫️ Smog Classification Pipeline
 
-A modular, extensible desktop GUI application for smog detection and object detection using a trained CNN and multiple dehazing, and object detection dechniques
+A modular, extensible desktop GUI application for smog detection and object detection using a trained CNN and multiple dehazing, and object detection techniques
 
-## Features
+## Pipeline
 
-- **Professional Desktop UI** - PyQt6-based graphical interface
-- **Simple Image Upload** - Select and preview images before classification
-- **Real-time Predictions** - Fast inference with confidence scores
-- **Extensible Pipeline** - Add new stages for image enhancement, segmentation, etc.
-- **PyTorch-based** - Uses your trained ResNet18 model
-- **Multi-threaded** - Non-blocking UI during model inference
+1. Select an image or video file for processing
+2. Choose a dehazing method (DCP, CLAHE)
+3. Choose an object detection method (HOG+SVM, YOLO, RCNN)
+4. Run the pipeline to perform smog classification and object detection
+5. View results in the Summary and Details tabs, with visualizations and metrics
+6. Optionally view segmentation masks for detected objects
+
 
 ## Core Techniques
 
-- **ResNet18**: Binary smog classification with residual connections
+### Smog Classification
+- **ResNet18**: Binary smog classification model trained on dataset ([SmogDetection](https://github.com/poojavinod100/SmogDetection)). Find training notebook in `train/smog-classify.ipynb`.
+
+### Dehazing Methods
+- **Dark Channel Prior (DCP)**: Traditional dehazing technique based on dark channel estimation
+- **CLAHE**: Contrast Limited Adaptive Histogram Equalization for enhancing local contrast
+
+### Object Detection Methods
+- **Haar Cascade (Vehicle) and HOG+SVM (Pedestrian)**: Classical AdaBoost vehicle and pedestrian detectors
 - **YOLOv8m**: Real-time multi-class object detection
-- **Haar Cascade**: Classical AdaBoost vehicle detector
-- **Segmentation Masks**: Pixel-level semantic segmentation for object detction
 - **R-CNN**: Instance-level region-based CNN for per-object segmentation
-- **HOG + SVM**: Classical feature-based classification
+
+### Segmentation
+- **Segmentation Masks**: Pixel-level semantic segmentation for object detction using morphological operations and contour detection 
 
 ## Installation
 
@@ -46,32 +55,6 @@ python app.py
 
 The desktop GUI will launch as a standalone window.
 
-## How It Works
-
-### 1. **Desktop Interface** (`app.py`)
-- Professional PyQt6 GUI with tabbed interface
-- Image upload with drag-and-drop preview
-- Model path configuration dialog
-- Results displayed in Summary and Details tabs
-- Real-time probability visualization with bar charts
-- Multi-threaded inference to keep UI responsive
-### 2. **Inference Module** (`inference.py`)
-- Loads the ResNet18 model from checkpoint
-- Handles image preprocessing (resize, normalize)
-- Performs binary classification: Clear vs Smog
-- Returns class, confidence, and probabilities
-
-### 3. **Pipeline Architecture** (`pipeline.py`)
-- Base `PipelineStage` class for creating new stages
-- `SmogClassificationPipeline` manages stage execution
-- Stages process data sequentially, passing output to next stage
-- Graceful error handling
-
-### 4. **Classification Stage** (`stages.py`)
-- Implements `PipelineStage` for smog classification
-- Wraps the inference module
-- Can be extended with additional stages
-
 
 ## UI Overview
 
@@ -90,6 +73,7 @@ The desktop GUI will launch as a standalone window.
   - Processing statistics
   - Scrollable metrics display
 
-## System Architecture
+<br>
+<img width="2880" height="1704" alt="Screenshot 2026-05-24 131655" src="https://github.com/user-attachments/assets/0ca0bfac-1617-4dd9-ba6d-cef2e03a2e90" />
 
-Multi-stage pipeline with parallel processing. ResNet18, YOLOv8, Haar Cascade, and HOG+SVM operate independently. Detection outputs guide region analysis; segmentation masks provide spatial context.
+
